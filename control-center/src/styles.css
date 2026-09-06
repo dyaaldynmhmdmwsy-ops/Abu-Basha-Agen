@@ -1,0 +1,376 @@
+:root {
+  font-family:
+    Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+  color: #e5e7eb;
+  background: #070b14;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top right, #18233a 0, transparent 38%),
+    #070b14;
+}
+
+button {
+  font: inherit;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding-bottom: 78px;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 20px;
+  border-bottom: 1px solid #1f2937;
+  background: rgba(7, 11, 20, 0.88);
+  backdrop-filter: blur(14px);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.brand {
+  font-size: 17px;
+  font-weight: 750;
+  letter-spacing: -0.02em;
+}
+
+.subtitle {
+  margin-top: 3px;
+  color: #8994a7;
+  font-size: 12px;
+}
+
+.status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: #aeb8c8;
+  font-size: 12px;
+}
+
+.status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 12px rgba(34, 197, 94, 0.55);
+}
+
+.content {
+  width: min(1180px, 100%);
+  margin: 0 auto;
+  padding: 22px 18px;
+}
+
+.hero {
+  border: 1px solid #263246;
+  border-radius: 22px;
+  padding: 26px 22px;
+  background: linear-gradient(145deg, #101827, #0b111d);
+}
+
+.eyebrow {
+  color: #7f8ba3;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.hero h1 {
+  margin: 8px 0 5px;
+  font-size: clamp(28px, 7vw, 42px);
+  letter-spacing: -0.04em;
+}
+
+.hero p {
+  margin: 0;
+  max-width: 650px;
+  color: #9ca8ba;
+  line-height: 1.7;
+  font-size: 14px;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.card {
+  min-height: 125px;
+  padding: 17px;
+  border: 1px solid #202c3f;
+  border-radius: 18px;
+  background: #0d1421;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.card-label {
+  color: #7f8ba3;
+  font-size: 12px;
+}
+
+.card strong {
+  font-size: 18px;
+}
+
+.card small {
+  color: #68758a;
+  font-size: 11px;
+}
+
+.workspace {
+  margin-top: 14px;
+  overflow: hidden;
+  border: 1px solid #202c3f;
+  border-radius: 20px;
+  background: #0b111d;
+}
+
+.workspace-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 17px;
+  border-bottom: 1px solid #1c2738;
+  color: #aab5c6;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.protected {
+  color: #6ee7b7;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+
+.workspace-body {
+  min-height: 230px;
+  padding: 32px 20px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.placeholder-icon {
+  width: 54px;
+  height: 54px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #30405a;
+  border-radius: 16px;
+  color: #9fb2ce;
+  font-size: 23px;
+  margin-bottom: 13px;
+}
+
+.workspace-body h2 {
+  margin: 0 0 7px;
+  font-size: 19px;
+}
+
+.workspace-body p {
+  max-width: 500px;
+  margin: 0;
+  color: #7f8ba3;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+.bottom-nav {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 20;
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  padding: 8px 6px calc(8px + env(safe-area-inset-bottom));
+  border-top: 1px solid #202c3f;
+  background: rgba(7, 11, 20, 0.96);
+  backdrop-filter: blur(18px);
+}
+
+.nav-item {
+  border: 0;
+  background: transparent;
+  color: #66748a;
+  min-width: 0;
+  padding: 6px 2px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.nav-item span {
+  font-size: 16px;
+}
+
+.nav-item small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+  font-size: 9px;
+}
+
+.nav-item.active {
+  color: #dbe7f7;
+}
+
+.nav-item.active span {
+  transform: translateY(-1px);
+}
+
+@media (min-width: 800px) {
+  .app-shell {
+    padding-bottom: 0;
+  }
+
+  .topbar {
+    padding-inline: 32px;
+  }
+
+  .content {
+    padding: 32px;
+  }
+
+  .grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .bottom-nav {
+    position: static;
+    max-width: 1180px;
+    margin: 0 auto;
+    border: 1px solid #202c3f;
+    border-radius: 18px;
+    margin-bottom: 24px;
+  }
+}
+
+.monitor-stack {
+  display: grid;
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.monitor-body {
+  padding: 16px 18px;
+  display: grid;
+  gap: 10px;
+}
+
+.monitor-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 11px 0;
+  border-bottom: 1px solid #1c2738;
+}
+
+.monitor-row:last-child {
+  border-bottom: 0;
+}
+
+.monitor-row span {
+  color: #7f8ba3;
+  font-size: 12px;
+}
+
+.monitor-row strong {
+  font-size: 13px;
+}
+
+.history-list {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+}
+
+.history-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 13px;
+  border: 1px solid #1d293b;
+  border-radius: 12px;
+  background: #0d1421;
+}
+
+.history-item strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.history-item small {
+  color: #7f8ba3;
+  font-size: 11px;
+}
+
+.empty-state,
+.error-state {
+  padding: 18px;
+  text-align: center;
+  color: #7f8ba3;
+  font-size: 12px;
+}
+
+.error-state {
+  margin-top: 14px;
+  border: 1px solid #51303a;
+  border-radius: 12px;
+  color: #f0a6b4;
+  background: #1a1015;
+}
+
+.refresh-button {
+  justify-self: start;
+  border: 1px solid #30405a;
+  border-radius: 12px;
+  padding: 10px 15px;
+  background: #101827;
+  color: #dbe7f7;
+  cursor: pointer;
+}
+
+.refresh-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+@media (min-width: 800px) {
+  .monitor-stack {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .monitor-stack > .workspace:last-of-type {
+    grid-column: 1 / -1;
+  }
+}

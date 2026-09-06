@@ -1,0 +1,23 @@
+{
+  "name": "agent",
+  "version": "1.0.0",
+  "description": "",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "node tests/developer-platform-bootstrap.js && node tests/developer-platform-integration.js && node tests/developer-core-integration.js && node tests/architecture-governance.js && node tests/phase9-master-decision-gate.js && node tests/phase9-master-approval-coordination.js && node tests/phase9-master-approval-e2e.js && node tests/phase9-master-canonical-plan-resolution.js && node tests/phase21-runtime-verification-gate.js && node tests/diagnostic-center-contract.js && node tests/diagnostic-runtime-integration.js && node tests/project-audit-provider-regression.js && npm run quality:gate && node tests/environment-forensic-provider-regression.js && node tests/master-orchestrator-lifecycle-regression.js && node tests/phase15-session-state-regression.js && node tests/phase16-resilience-regression.js && node tests/phase17-injection-defense-regression.js && node tests/phase18-voice-regression.js && node tests/phase19-observability-regression.js && node tests/phase20-revenue-engine-regression.js && node tests/phase21-gemini-gateway-contract-regression.js && node tests/phase22-chat-api-regression.js && node tests/phase22-6-block-d-regression.js && node tests/phase22-7-block-b-regression.js && node tests/phase22-7-block-c-regression.js && node tests/phase22-7-block-d-regression.js",
+    "quality:gate": "node tools/quality/quality-gate.js",
+    "gate:full": "node scripts/engineering-gate.js full",
+    "gate:quality": "node scripts/engineering-gate.js quality",
+    "gate:targeted": "node scripts/engineering-gate.js targeted",
+    "start": "node src/startup.js",
+    "release": "node src/startup.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@google/genai": "^2.19.0",
+    "dotenv": "^17.4.2"
+  }
+}
