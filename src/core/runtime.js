@@ -29,13 +29,22 @@ const ConnectorResolver = require("../connectors/resolver");
 const GeminiAdapter = require("../connectors/adapters/gemini-adapter");
 const AuditStore = require("../observability/audit-store");
 class AgentRuntime {
-  constructor() {
+  constructor(options = {}) {
+    const projectRoot = options.projectRoot || process.cwd();
+    const sessionStateOptions = options.dbPath
+      ? { dbPath: options.dbPath }
+      : {};
+
+    // Phase 23: Host Context is optional for backward compatibility.
+    // Legacy Termux/CLI execution continues to use process.cwd().
+    this.projectRoot = projectRoot;
+
 
     // Phase 3: safe Master + Abu Basha Runtime ownership
     this.master = new Master();
     this.verificationGate = new PlanVerificationGate(this);
     this.approvalGate = new HumanApprovalGate(this);
-    this.sessionState = new SessionStateManager();
+    this.sessionState = new SessionStateManager(sessionStateOptions);
     this.auditStore = new AuditStore({ dbPath: this.sessionState.dbPath });
     this.abuBashaPod = new AbuBashaPod({ mode: this.master.mode });
     this.master.registerPod("abu-basha", this.abuBashaPod);
@@ -59,7 +68,7 @@ class AgentRuntime {
 
     // Diagnostic Center owns read-only quality inspection providers.
     this.diagnosticCenter = new DiagnosticCenter();
-    const qualityProvider = new QualityProvider({ root: process.cwd() });
+    const qualityProvider = new QualityProvider({ root: projectRoot });
     const qualityRegistration = this.diagnosticCenter.registerProvider(
       "quality",
       qualityProvider
@@ -82,7 +91,7 @@ class AgentRuntime {
 
     const developerPlatform = createDefaultDeveloperPlatform({
       registry: this.developerTools,
-      rootDir: process.cwd()
+      rootDir: projectRoot
     });
 
     if (!developerPlatform.success) {

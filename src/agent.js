@@ -11,7 +11,17 @@ class Agent {
     this.status = "online";
 
     // Runtime المركزي للوكيل
-    this.runtime = options.runtime || new AgentRuntime();
+    // Phase 23: propagate optional Host Context without breaking legacy callers.
+    const runtimeOptions = {};
+    if (options.projectRoot) {
+      runtimeOptions.projectRoot = options.projectRoot;
+    }
+    if (options.dbPath) {
+      runtimeOptions.dbPath = options.dbPath;
+    }
+
+    this.runtime =
+      options.runtime || new AgentRuntime(runtimeOptions);
 
     // إبقاء Revenue Engine متاحاً للتوافق مع الكود القديم
     this.revenue = this.runtime.revenue || new RevenueEngine();
