@@ -56,7 +56,9 @@ function runNodeCommand(command) {
     {
       cwd: ROOT,
       stdio: "inherit",
-      shell: false
+      shell: false,
+      timeout: 60000,
+      killSignal: "SIGTERM"
     }
   );
 
@@ -102,7 +104,9 @@ function runNpmCommand(command) {
     {
       cwd: ROOT,
       stdio: "inherit",
-      shell: false
+      shell: false,
+      timeout: 60000,
+      killSignal: "SIGTERM"
     }
   );
 
@@ -281,6 +285,8 @@ function runRealGate() {
       cwd: ROOT,
       stdio: "inherit",
       shell: false,
+      timeout: 60000,
+      killSignal: "SIGTERM",
       env: {
         ...process.env,
         PHASE21_REAL_CONNECTOR: "1"

@@ -39,6 +39,8 @@ function run(cmd, args = []) {
     const r = cp.spawnSync(executable, args, {
       cwd: ROOT,
       encoding: "utf8",
+      timeout: 10000,
+      killSignal: "SIGTERM",
       maxBuffer: 8 * 1024 * 1024
     });
 

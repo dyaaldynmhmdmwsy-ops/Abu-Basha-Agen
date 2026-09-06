@@ -35,7 +35,10 @@ class ProjectAuditProvider {
           PROJECT_AUDIT_READ_ONLY: "1",
           PROJECT_AUDIT_SKIP_NPM_TEST: "1"
         },
-        encoding: "utf8"
+        encoding: "utf8",
+        timeout: 180000,
+        killSignal: "SIGTERM",
+        maxBuffer: 16 * 1024 * 1024
       }
     );
 
