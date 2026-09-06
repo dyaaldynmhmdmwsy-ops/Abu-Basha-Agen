@@ -108,7 +108,17 @@ async function stopChild(child) {
     return;
   }
 
-  child.kill("SIGTERM");
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-child.pid, "SIGTERM");
+    } catch (error) {
+      if (error.code !== "ESRCH") {
+        throw error;
+      }
+    }
+  } else {
+    child.kill("SIGTERM");
+  }
 
   await new Promise((resolve) => {
     const timer = setTimeout(resolve, 5000);
@@ -204,7 +214,8 @@ async function main() {
     {
       cwd: ROOT,
       env: { ...process.env },
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      detached: process.platform !== "win32"
     }
   );
 
