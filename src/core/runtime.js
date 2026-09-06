@@ -119,20 +119,18 @@ class AgentRuntime {
     // Keep Manager, Executor, Hub, Resolver and Policy synchronized.    // Gemini AI Connector
     const geminiConnector = new GeminiAdapter();
 
-    if (geminiConnector.isConfigured()) {
-      this.registerConnector(
-        "gemini",
-        geminiConnector,
-        {
-          category: "ai",
-          description: "Google Gemini AI connector",
-          version: "1.0.0",
-          enabled: true,
-          requiresApproval: true,
-          externalExecution: true
-        }
-      );
-    }
+    this.registerConnector(
+      "gemini",
+      geminiConnector,
+      {
+        category: "ai",
+        description: "Google Gemini AI connector",
+        version: "1.0.0",
+        enabled: true,
+        requiresApproval: true,
+        externalExecution: true
+      }
+    );
 
 
 
@@ -164,9 +162,7 @@ class AgentRuntime {
       "gemini"
     );
 
-    if (geminiConnector.isConfigured()) {
-      this.connectorPolicy.allowConnector("gemini");
-    }
+    this.connectorPolicy.allowConnector("gemini");
 
 
 
