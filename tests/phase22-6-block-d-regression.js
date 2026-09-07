@@ -209,8 +209,8 @@ async function main() {
   );
 
   const child = spawn(
-    process.platform === "win32" ? "npm.cmd" : "npm",
-    ["run", "start"],
+    "node",
+    ["src/startup.js"],
     {
       cwd: ROOT,
       env: { ...process.env },
