@@ -3,6 +3,16 @@
 const ProjectAuditProvider = require("./providers/project-audit-provider");
 const EnvironmentForensicProvider = require("./providers/environment-forensic-provider");
 const PathIntelligenceProvider = require("./providers/path-intelligence-provider");
+const QualityProvider = require("./providers/quality-provider");
+const EvidenceEngine = require("./evidence-engine");
+const CorrelationEngine = require("./correlation-engine");
+const RootCauseEngine = require("./root-cause-engine");
+const RepairPlanEngine = require("./repair-plan-engine");
+const VerificationEngine = require("./verification-engine");
+const QualityFindingAdapter = require("./adapters/quality-finding-adapter");
+const ProjectAuditFindingAdapter = require("./adapters/project-audit-finding-adapter");
+const EnvironmentForensicFindingAdapter = require("./adapters/environment-forensic-finding-adapter");
+const PathIntelligenceFindingAdapter = require("./adapters/path-intelligence-finding-adapter");
 
 /**
  * Diagnostic Center
@@ -24,6 +34,41 @@ class DiagnosticCenter {
 
     this.mode = options.mode || "diagnostic";
     this.providers = new Map();
+
+    this.evidenceEngine = new EvidenceEngine();
+    this.correlationEngine = new CorrelationEngine();
+    this.rootCauseEngine = new RootCauseEngine();
+    this.repairPlanEngine = new RepairPlanEngine();
+    this.verificationEngine = new VerificationEngine();
+    this.qualityFindingAdapter = new QualityFindingAdapter();
+    this.projectAuditFindingAdapter = new ProjectAuditFindingAdapter();
+    this.environmentForensicFindingAdapter = new EnvironmentForensicFindingAdapter();
+    this.pathIntelligenceFindingAdapter = new PathIntelligenceFindingAdapter();
+
+    this._validateDiagnosticEngine(
+      "evidence",
+      this.evidenceEngine,
+      ["buildReport", "getStatus"]
+    );
+    this._validateDiagnosticEngine(
+      "correlation",
+      this.correlationEngine,
+      ["buildReport", "getStatus"]
+    );
+    this._validateDiagnosticEngine(
+      "root-cause",
+      this.rootCauseEngine,
+      ["buildReport", "getStatus"]
+    );
+    this._validateDiagnosticEngine(
+      "repair-plan",
+      this.repairPlanEngine,
+      ["buildReport", "getStatus"]
+    );    this._validateDiagnosticEngine(
+      "verification",
+      this.verificationEngine,
+      ["buildReport", "getStatus"]
+    );
     const projectAuditProvider = new ProjectAuditProvider({
       root: process.cwd()
     });
@@ -67,6 +112,12 @@ class DiagnosticCenter {
       projectAuditProvider
     );
 
+    const qualityProvider = new QualityProvider();
+    const qualityRegistration = this.registerProvider(
+      "quality",
+      qualityProvider
+    );
+
     if (!projectAuditRegistration.success) {
       throw new Error(
         `Diagnostic Center project audit bootstrap failed: ${projectAuditRegistration.type}`
@@ -83,6 +134,35 @@ class DiagnosticCenter {
 
     this.lastReport = null;
     this.history = [];
+  }
+
+  _validateDiagnosticEngine(name, engine, requiredMethods = []) {
+    if (!engine || typeof engine !== "object") {
+      throw new Error(
+        `Diagnostic Center ${name} engine bootstrap failed: invalid engine.`
+      );
+    }
+
+    if (
+      engine.externalExecution === true ||
+      engine.autoFix === true ||
+      engine.autonomousExecution === true ||
+      engine.readOnly !== true ||
+      engine.safe !== true ||
+      engine.failClosed !== true
+    ) {
+      throw new Error(
+        `Diagnostic Center ${name} engine bootstrap failed: unsafe engine.`
+      );
+    }
+
+    for (const method of requiredMethods) {
+      if (typeof engine[method] !== "function") {
+        throw new Error(
+          `Diagnostic Center ${name} engine bootstrap failed: missing ${method}().`
+        );
+      }
+    }
   }
 
   registerProvider(name, provider) {
@@ -253,7 +333,30 @@ class DiagnosticCenter {
               : provider.diagnose.bind(provider);
 
         const result = await method(options.context || {});
-        results.push(this.normalizeResult(result, providerName));
+        const adaptedResult =
+      providerName === "quality"
+        ? {
+            ...result,
+            findings: this.qualityFindingAdapter.adapt(result)
+          }
+        : providerName === "project-audit"
+          ? {
+              ...result,
+              findings: this.projectAuditFindingAdapter.adapt(result)
+            }
+          : providerName === "environment-forensic"
+            ? {
+                ...result,
+                findings: this.environmentForensicFindingAdapter.adapt(result)
+              }
+            : providerName === "path-intelligence"
+              ? {
+                  ...result,
+                  findings: this.pathIntelligenceFindingAdapter.adapt(result)
+                }
+              : result;
+
+    results.push(this.normalizeResult(adaptedResult, providerName));
       } catch (error) {
         results.push(
           this.normalizeResult(
@@ -270,9 +373,121 @@ class DiagnosticCenter {
 
     const hasFail = results.some(result => result.status === "FAIL");
     const hasWarn = results.some(result => result.status === "WARN");
+    const hasPipelineError = results.some(
+      result =>
+        typeof result.error === "string" &&
+        result.error.trim().length > 0
+    );
+
+    let evidenceReport;
+    let correlationReport;
+    let rootCauseReport;
+    let repairPlanReport;
+    let verificationReport;
+
+    try {
+      evidenceReport = this.evidenceEngine.buildReport(results);
+
+      correlationReport = this.correlationEngine.buildReport([
+        {
+          provider: "evidence-engine",
+          findings: Array.isArray(evidenceReport.findings)
+            ? evidenceReport.findings
+            : []
+        }
+      ]);
+
+      if (
+        !correlationReport ||
+        correlationReport.success !== true
+      ) {
+        throw new Error(
+          "Diagnostic correlation engine failed closed."
+        );
+      }
+
+      rootCauseReport =
+        this.rootCauseEngine.buildReport(correlationReport);
+
+      if (
+        !rootCauseReport ||
+        rootCauseReport.success !== true
+      ) {
+        throw new Error(
+          "Diagnostic root-cause engine failed closed."
+        );
+      }
+
+      repairPlanReport =
+        this.repairPlanEngine.buildReport(rootCauseReport);
+
+      if (
+        !repairPlanReport ||
+        repairPlanReport.success !== true
+      ) {
+        throw new Error(
+          "Diagnostic repair-plan engine failed closed."
+        );
+      }
+
+      verificationReport =
+        this.verificationEngine.buildReport({
+          findings: Array.isArray(evidenceReport.findings)
+            ? evidenceReport.findings
+            : [],
+          rootCause: rootCauseReport,
+          repairPlan: repairPlanReport
+        });
+
+      if (
+        !verificationReport ||
+        verificationReport.success !== true
+      ) {
+        throw new Error(
+          "Diagnostic independent verification failed closed."
+        );
+      }
+
+      if (verificationReport.status === "CONTRADICTED") {
+        throw new Error(
+          "Diagnostic independent verification detected contradictory evidence."
+        );
+      }
+    } catch (error) {
+      const report = {
+        success: false,
+        status: "FAIL",
+        center: this.name,
+        version: this.version,
+        mode: this.mode,
+        startedAt: new Date(startedAt).toISOString(),
+        duration: Date.now() - startedAt,
+        providers: results,
+        evidence: evidenceReport || null,
+        correlation: correlationReport || null,
+        rootCause: rootCauseReport || null,
+        repairPlan: repairPlanReport || null,
+        verification: typeof verificationReport !== "undefined" ? verificationReport : null,
+        error: error.message || String(error),
+        safety: {
+          safe: this.safe,
+          readOnly: this.readOnly,
+          autoFix: this.autoFix,
+          externalExecution: this.externalExecution,
+          autonomousExecution: this.autonomousExecution,
+          failClosed: this.failClosed,
+          requiresApproval: this.requiresApproval
+        }
+      };
+
+      this.lastReport = report;
+      this.history.push(report);
+      return report;
+    }
 
     const report = {
-      success: !hasFail,
+      success: !hasPipelineError,
+      pipelineSuccess: !hasPipelineError,
       status: hasFail ? "FAIL" : hasWarn ? "WARN" : "PASS",
       center: this.name,
       version: this.version,
@@ -280,6 +495,25 @@ class DiagnosticCenter {
       startedAt: new Date(startedAt).toISOString(),
       duration: Date.now() - startedAt,
       providers: results,
+
+      evidence: evidenceReport,
+      correlation: correlationReport,
+      rootCause: rootCauseReport,
+      repairPlan: repairPlanReport,
+      verification: verificationReport,
+      verificationStatus: verificationReport.status,
+
+      findings: Array.isArray(evidenceReport.findings)
+        ? evidenceReport.findings
+        : [],
+
+      classificationCounts:
+        evidenceReport.classificationCounts || {},
+
+      repairReady:
+        Array.isArray(repairPlanReport.plans) &&
+        repairPlanReport.plans.length > 0,
+
       safety: {
         safe: this.safe,
         readOnly: this.readOnly,
