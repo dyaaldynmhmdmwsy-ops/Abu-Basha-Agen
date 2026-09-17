@@ -1,12 +1,54 @@
 "use strict";
 
 const http = require("http");
+const fs = require("fs");
+const path = require("path");
 const ApiBoundary = require("../api");
 const { createAgent } = require("../index");
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 3000;
 const MAX_BODY_BYTES = 1024 * 1024;
+
+const STATIC_ROOT = path.resolve(__dirname, "../../control-center/dist");
+
+const CONTENT_TYPES = Object.freeze({
+  ".html": "text/html; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+  ".ico": "image/x-icon"
+});
+
+function staticResponse(res, filePath) {
+  const relative = String(filePath || "").replaceAll("\\", "/");
+  const absolute = path.resolve(STATIC_ROOT, "." + "/" + relative);
+
+  if (!absolute.startsWith(STATIC_ROOT + path.sep)) {
+    return errorResponse(res, 403, "static_path_forbidden");
+  }
+
+  if (!fs.existsSync(absolute) || !fs.statSync(absolute).isFile()) {
+    return errorResponse(res, 404, "static_file_not_found");
+  }
+
+  const body = fs.readFileSync(absolute);
+  const type = CONTENT_TYPES[path.extname(absolute).toLowerCase()] ||
+    "application/octet-stream";
+
+  res.writeHead(200, {
+    "Content-Type": type,
+    "Content-Length": body.length,
+    "Cache-Control": "no-store"
+  });
+
+  res.end(body);
+}
 
 function jsonResponse(res, statusCode, payload) {
   const body = JSON.stringify(payload);
@@ -101,6 +143,14 @@ function createHttpBridge(options = {}) {
         });
       }
 
+      if (method === "GET" && path === "/") {
+        return staticResponse(res, "index.html");
+      }
+
+      if (method === "GET" && path.startsWith("/assets/")) {
+        return staticResponse(res, path.slice(1));
+      }
+
       if (method === "GET" && path === "/api/status") {
         return jsonResponse(res, 200, api.getStatus());
       }
@@ -160,8 +210,116 @@ function createHttpBridge(options = {}) {
         return jsonResponse(res, 200, api.getRevenuePlans());
       }
 
+      if (method === "POST" && path === "/api/revenue/plans") {
+        const body = await readJsonBody(req);
+
+        const opportunityId =
+          typeof body.opportunityId === "string"
+            ? body.opportunityId.trim()
+            : "";
+
+        const target =
+          typeof body.target === "string" && body.target.trim()
+            ? body.target.trim()
+            : "online";
+
+        if (!opportunityId) {
+          return errorResponse(
+            res,
+            400,
+            "revenue_opportunity_id_required"
+          );
+        }
+
+        const result = api.createRevenuePlanWithApproval(
+          opportunityId,
+          target
+        );
+
+        if (!result || result.success !== true) {
+          return jsonResponse(res, 400, result || {
+            success: false,
+            type: "revenue_plan_approval_failed",
+            failClosed: true
+          });
+        }
+
+        return jsonResponse(res, 200, result);
+      }
+
       if (method === "GET" && path === "/api/metadata") {
         return jsonResponse(res, 200, api.getMetadata());
+      }
+
+      if (method === "POST" && path === "/api/developer/approval") {
+        const body = await readJsonBody(req);
+
+        const task =
+          typeof body.task === "string"
+            ? body.task.trim()
+            : "";
+
+        if (!task) {
+          return errorResponse(res, 400, "developer_task_required");
+        }
+
+        const result = api.createDeveloperApproval({ task });
+
+        return jsonResponse(
+          res,
+          result && result.success === true ? 200 : 400,
+          result || {
+            success: false,
+            type: "developer_approval_failed",
+            failClosed: true
+          }
+        );
+      }
+
+      if (
+      method === "POST" &&
+      path === "/api/developer/execute-approved"
+    ) {
+      const body = await readJsonBody(req);
+      const approvalId =
+        typeof body.approvalId === "string"
+          ? body.approvalId.trim()
+          : "";
+
+      if (!approvalId) {
+        return errorResponse(res, 400, "approval_id_required");
+      }
+
+      const result = await api.executeApprovedDeveloper(approvalId);
+
+      return jsonResponse(
+        res,
+        result && result.success === true ? 200 : 400,
+        result || {
+          success: false,
+          type: "developer_execution_failed",
+          executionAllowed: false,
+          failClosed: true
+        }
+      );
+    }
+
+    if (method === "POST" && path === "/api/chat") {
+        const body = await readJsonBody(req);
+        const prompt = typeof body.prompt === "string"
+          ? body.prompt.trim()
+          : "";
+
+        if (!prompt) {
+          return errorResponse(res, 400, "prompt_required");
+        }
+
+        const result = await api.chat(
+          prompt,
+          body.options || {}
+        );
+
+        return jsonResponse(res, 200, result);
       }
 
       if (method === "POST" && path === "/api/chat/approval") {
@@ -259,7 +417,7 @@ function createHttpBridge(options = {}) {
     api,
     runtime,
     host: options.host || DEFAULT_HOST,
-    port: Number(options.port || DEFAULT_PORT),
+    port: Number(options.port ?? DEFAULT_PORT),
 
     start(callback) {
       server.listen(this.port, this.host, callback);

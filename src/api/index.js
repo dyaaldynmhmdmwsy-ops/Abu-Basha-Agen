@@ -49,6 +49,21 @@ class ApiBoundary {
     };
   }
 
+  async chat(prompt, options = {}) {
+    if (!this.runtime || typeof this.runtime.chat !== "function") {
+      return {
+        success: false,
+        type: "chat_runtime_unavailable",
+        executionAllowed: false,
+        externalExecution: false,
+        failClosed: true,
+        message: "مسار الدردشة في Runtime غير متاح."
+      };
+    }
+
+    return this.runtime.chat(prompt, options);
+  }
+
   createChatApproval(prompt, options = {}) {
     if (
       !this.runtime ||
@@ -274,6 +289,99 @@ class ApiBoundary {
     };
   }
 
+  createDeveloperApproval(request = {}) {
+    if (
+      !this.runtime ||
+      typeof this.runtime.createDeveloperApproval !== "function"
+    ) {
+      return {
+        success: false,
+        type: "developer_approval_api_unavailable",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    const task =
+      request && typeof request.task === "string"
+        ? request.task.trim()
+        : "";
+
+    if (!task) {
+      return {
+        success: false,
+        type: "developer_task_required",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    return this.runtime.createDeveloperApproval({
+      task
+    });
+  }
+
+  createRevenuePlanWithApproval(opportunityId, target = "online") {
+    const normalizedOpportunityId =
+      typeof opportunityId === "string"
+        ? opportunityId.trim()
+        : "";
+
+    if (!normalizedOpportunityId) {
+      return {
+        success: false,
+        type: "revenue_opportunity_id_required",
+        failClosed: true
+      };
+    }
+
+    if (
+      typeof this.runtime.createRevenuePlanWithApproval !==
+      "function"
+    ) {
+      return {
+        success: false,
+        type: "revenue_plan_approval_unavailable",
+        failClosed: true
+      };
+    }
+
+    return this.runtime.createRevenuePlanWithApproval(
+      normalizedOpportunityId,
+      target
+    );
+  }
+
+
+  async executeApprovedDeveloper(approvalId) {
+    if (
+      !this.runtime ||
+      typeof this.runtime.executeApprovedDeveloper !== "function"
+    ) {
+      return {
+        success: false,
+        type: "developer_execution_api_unavailable",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    const id =
+      typeof approvalId === "string"
+        ? approvalId.trim()
+        : "";
+
+    if (!id) {
+      return {
+        success: false,
+        type: "approval_id_required",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    return this.runtime.executeApprovedDeveloper(id);
+  }
 
   approve(approvalId) {
     if (typeof this.runtime.approve !== "function") {

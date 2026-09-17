@@ -13,6 +13,27 @@ class PlanRegistry {
     this.version = "1.0.0";
     this.plans = new Map();
 
+    /*
+     * Canonical developer/coding plan.
+     *
+     * The tool is fixed at the plan boundary. Callers must not
+     * select an arbitrary developer tool through the HTTP API.
+     * Approval is created separately and execution enters
+     * Runtime.executeApproved() -> PlanExecutor.
+     */
+    this.register("developer_coding", {
+      name: "Developer Coding",
+      category: "developer",
+      steps: [
+        {
+          name: "execute_coding_task",
+          label: "تنفيذ مهمة برمجية بعد الموافقة",
+          type: "developer",
+          tool: "termux"
+        }
+      ]
+    });
+
     this.register("telegram_service", {
       name: "Telegram Bot Service",
       category: "software",

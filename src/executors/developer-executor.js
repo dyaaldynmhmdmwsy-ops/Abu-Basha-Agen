@@ -194,18 +194,19 @@ class DeveloperExecutor {
     }
 
     /*
-     * الوضع التجريبي عند عدم وجود Tool/Connector.
+     * FAIL-CLOSED:
+     * A developer step must never report success when no real
+     * Tool/Connector execution path was resolved.
      */
     if (result === undefined) {
       result = {
-        success: true,
-        type: "developer",
-        simulated: true,
+        success: false,
+        type: "developer_execution_unavailable",
+        executionAllowed: false,
+        failClosed: true,
         action: step.name,
-        message:
-          `تم تجهيز خطوة التطوير البرمجي تجريبياً: ${step.label}`,
-        payload,
-        options
+        tool: toolName,
+        message: "لم يتم العثور على مسار تنفيذ فعلي لخطوة التطوير."
       };
     }
 

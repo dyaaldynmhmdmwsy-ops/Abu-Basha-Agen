@@ -80,63 +80,141 @@ class GeminiAdapter extends BaseAdapter {
 
     this.executed++;
 
-    const timeoutMs = Number(
-      payload.timeoutMs ||
-      process.env.GEMINI_TIMEOUT_MS ||
-      30000
-    );
 
-    const request = this.client.models.generateContent({
-      model,
-      contents: `${SYSTEM_PROMPT}\n\nبيانات المستخدم غير الموثوقة:\n${trustedInput.text}`
-    });
 
-    const timeout = new Promise((_, reject) =>
-      setTimeout(
-        () => reject(new Error("Gemini request timed out.")),
-        timeoutMs
-      )
-    );
+    let lastStatus = 0;
+    let lastMessage = "";
+
+    // Retry ownership is delegated to the Runtime ResilienceManager.
+    // The adapter performs one primary provider request per execute() call.
+
+    const executeRequest = async (requestModel) => {
+      const request = this.client.models.generateContent({
+        model: requestModel,
+        config: {
+      systemInstruction: SYSTEM_PROMPT,
+      maxOutputTokens: 256,
+          httpOptions: { timeout: 60000 }
+        },
+        contents: trustedInput.text
+      });
+
+      return request;
+    };
 
     try {
-      const response = await Promise.race([
-        request,
-        timeout
-      ]);
+      const response = await executeRequest(model);
 
       return {
         success: true,
         type: "gemini_response",
         connector: "gemini",
         model,
+        attempts: 1,
         text: response.text || "",
         context
       };
     } catch (error) {
-      const status = Number(error?.status || error?.response?.status || 0);
-      const message = String(error?.message || error || "");
+      lastStatus = Number(
+        error?.status ||
+        error?.response?.status ||
+        0
+      );
 
-      if (message.includes("timed out")) {
+      lastMessage = String(
+        error?.message ||
+        error ||
+        ""
+      );
+
+      if (lastMessage.includes("timed out")) {
         return {
           success: false,
           type: "gemini_timeout",
           connector: "gemini",
           model,
+          attempts: 1,
+          retryable: false,
           message: "انتهت مهلة طلب Gemini.",
           context
         };
       }
-
-      return {
-        success: false,
-        type: "gemini_api_error",
-        connector: "gemini",
-        model,
-        status: status || null,
-        message,
-        context
-      };
     }
+
+    const transient503 =
+      lastStatus === 503 ||
+      lastMessage.includes("UNAVAILABLE") ||
+      lastMessage.includes("high demand");
+
+    const fallbackSelection = this.modelRouter.resolveFallback(model);
+    const fallbackModel = fallbackSelection.success
+      ? fallbackSelection.model.id
+      : null;
+
+    let fallbackAttempted = false;
+
+    if (
+      transient503 &&
+      fallbackModel &&
+      fallbackModel !== model
+    ) {
+      fallbackAttempted = true;
+
+      try {
+        const response = await executeRequest(fallbackModel);
+
+        return {
+          success: true,
+          type: "gemini_response",
+          connector: "gemini",
+          model: fallbackModel,
+          requestedModel: model,
+          fallback: true,
+          attempts: 2,
+          text: response.text || "",
+          context
+        };
+      } catch (fallbackError) {
+        lastStatus = Number(
+          fallbackError?.status ||
+          fallbackError?.response?.status ||
+          0
+        );
+
+        lastMessage = String(
+          fallbackError?.message ||
+          fallbackError ||
+          ""
+        );
+      }
+    }
+
+    const quotaExceeded =
+      lastStatus === 429 &&
+      /quota exceeded|quota_exceeded|daily quota/i.test(lastMessage);
+
+    const retryable =
+      !quotaExceeded &&
+      (
+        lastStatus === 408 ||
+        lastStatus === 425 ||
+        lastStatus === 429 ||
+        (lastStatus >= 500 && lastStatus <= 599)
+      );
+
+    return {
+      success: false,
+      type: quotaExceeded ? "gemini_quota_exceeded" : "gemini_api_error",
+      connector: "gemini",
+      model,
+      status: lastStatus || null,
+      retryable,
+      quotaExceeded,
+      attempts: fallbackAttempted ? 2 : 1,
+      fallbackAttempted,
+      message: lastMessage,
+      context
+    };
   }
 }
 

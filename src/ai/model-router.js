@@ -11,7 +11,7 @@ class ModelRouter {
     this.registry = options.registry || new ModelRegistry();
 
     this.defaultModel =
-      options.defaultModel || "gemini-3.6-flash";
+      options.defaultModel || "gemini-3.8-flash";
   }
 
   resolve(requestedModel = null) {
@@ -55,6 +55,43 @@ class ModelRouter {
       type: "model_selected",
       model: fallback,
       source: "fallback"
+    };
+  }
+
+  resolveFallback(primaryModel = null) {
+    const primary = primaryModel || this.defaultModel;
+
+    const candidates = this.registry
+      .list()
+      .filter(model =>
+        model &&
+        model.id !== primary &&
+        model.status === "stable" &&
+        model.capability === "text" &&
+        model.fallbackEligible === true
+      )
+      .sort(
+        (a, b) =>
+          Number(b.fallbackPriority || 0) -
+          Number(a.fallbackPriority || 0)
+      );
+
+    const fallback = candidates[0] || null;
+
+    if (!fallback) {
+      return {
+        success: false,
+        type: "no_fallback_model_available",
+        primaryModel: primary
+      };
+    }
+
+    return {
+      success: true,
+      type: "fallback_model_selected",
+      model: fallback,
+      primaryModel: primary,
+      source: "model_policy"
     };
   }
 

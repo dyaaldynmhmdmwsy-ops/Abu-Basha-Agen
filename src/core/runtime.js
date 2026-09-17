@@ -27,6 +27,7 @@ const ConnectorHub = require("../connectors/hub");
 const HubMockConnector = require("../connectors/hub/mock-connector");
 const ConnectorResolver = require("../connectors/resolver");
 const GeminiAdapter = require("../connectors/adapters/gemini-adapter");
+const ResilienceManager = require("../resilience");
 const AuditStore = require("../observability/audit-store");
 class AgentRuntime {
   constructor(options = {}) {
@@ -66,19 +67,8 @@ class AgentRuntime {
     this.connectorPolicy = new ConnectorPolicy();
     this.revenue = new RevenueEngine();
 
-    // Diagnostic Center owns read-only quality inspection providers.
     this.diagnosticCenter = new DiagnosticCenter();
-    const qualityProvider = new QualityProvider({ root: projectRoot });
-    const qualityRegistration = this.diagnosticCenter.registerProvider(
-      "quality",
-      qualityProvider
-    );
 
-    if (!qualityRegistration.success) {
-      throw new Error(
-        `Diagnostic Center bootstrap failed: ${qualityRegistration.type}`
-      );
-    }
     this.approvals = new ApprovalQueue();
 
     this.executionGate = new ExecutionGate({
@@ -109,15 +99,18 @@ class AgentRuntime {
       hub: this.connectorHub,
       resolver: this.connectorResolver,
       policy: this.connectorPolicy,
-      executionGate: this.executionGate
+      executionGate: this.executionGate,
+        auditStore: this.auditStore
     });
-    this.connectorGateway.auditStore = this.auditStore;
+
 
 
     // PHASE2_MOCK_BOOTSTRAP
     // PHASE 2 FINAL CONNECTOR BOOTSTRAP
     // Keep Manager, Executor, Hub, Resolver and Policy synchronized.    // Gemini AI Connector
     const geminiConnector = new GeminiAdapter();
+    this.geminiResilience = new ResilienceManager(this);
+    this.geminiAdapter = geminiConnector;
 
     this.registerConnector(
       "gemini",
@@ -143,7 +136,8 @@ class AgentRuntime {
         category: "system",
         description: "Safe simulated connector",
         version: "1.0.0",
-        enabled: true
+        enabled: true,
+        requiresApproval: false
       }
     );
 
@@ -463,33 +457,253 @@ class AgentRuntime {
     );
   }
 
-  async askAI(prompt, options = {}) {
-    if (!prompt || !String(prompt).trim()) {
+  /**
+   * E1.6-A
+   * Classify the user's request before choosing a chat path.
+   *
+   * This classifier is intentionally conservative:
+   * - ordinary conversation stays conversation
+   * - explicit external-action language becomes an action proposal
+   * - proposals never execute by themselves
+   */
+  classifyChatIntent(prompt) {
+    const text = typeof prompt === "string" ? prompt.trim() : "";
+
+    if (!text) {
       return {
         success: false,
-        type: "invalid_ai_prompt",
-        message: "AI يحتاج prompt."
+        type: "invalid_chat_prompt"
       };
     }
 
-    if (!this.connectorGateway) {
+    const normalized = text.toLowerCase();
+
+    const actionVerbs = [
+      "انشر",
+      "نشر",
+      "أرسل",
+      "ارسل",
+      "إرسال",
+      "ارسال",
+      "احذف",
+      "حذف",
+      "عدّل",
+      "عدل",
+      "تعديل",
+      "حدّث",
+      "حدث",
+      "تحديث",
+      "ارفع",
+      "رفع",
+      "حمّل",
+      "حمل",
+      "تحميل",
+      "publish",
+      "post",
+      "send",
+      "delete",
+      "remove",
+      "update",
+      "upload"
+    ];
+
+    const externalTargets = [
+      "فيسبوك",
+      "facebook",
+      "انستغرام",
+      "إنستغرام",
+      "instagram",
+      "واتساب",
+      "whatsapp",
+      "تيليجرام",
+      "telegram",
+      "يوتيوب",
+      "youtube",
+      "تيك توك",
+      "tiktok"
+    ];
+
+    const hasActionVerb = actionVerbs.some(
+      verb => normalized.includes(verb)
+    );
+
+    const hasExternalTarget = externalTargets.some(
+      target => normalized.includes(target)
+    );
+
+    const actionIntent = hasActionVerb && hasExternalTarget;
+
+    if (!actionIntent) {
       return {
-        success: false,
-        type: "ai_gateway_unavailable",
-        message: "مسار AI الموحد غير متاح."
+        success: true,
+        intent: "conversation",
+        approvalRequired: false,
+        executionAllowed: false,
+        externalExecution: false
       };
     }
 
-    return this.connectorGateway.execute(
-      "gemini",
-      { prompt: String(prompt), ...(options.payload || {}) },
-      options.context || {},
+    return {
+      success: true,
+      intent: "action",
+      approvalRequired: true,
+      executionAllowed: false,
+      externalExecution: true,
+      executable: false,
+      proposal: {
+        type: "action_proposal",
+        prompt: text,
+        requiresApproval: true,
+        approvalRequired: true,
+        executionAllowed: false,
+        externalExecution: true,
+        executable: false,
+        detected: {
+          hasActionVerb,
+          hasExternalTarget
+        }
+      }
+    };
+  }
+
+  /**
+   * E1.6-A
+   * Direct conversational inference.
+   *
+   * This is inference only. It does not create approval and does not
+   * enter ConnectorGateway / PlanExecutor / external execution.
+   */
+  async chat(prompt, options = {}) {
+    const text = typeof prompt === "string" ? prompt.trim() : "";
+
+    if (!text) {
+      return {
+        success: false,
+        type: "invalid_chat_prompt",
+        message: "طلب الدردشة فارغ.",
+        executionAllowed: false,
+        externalExecution: false,
+        failClosed: true
+      };
+    }
+
+    const intent = this.classifyChatIntent(text);
+
+    if (!intent.success) {
+      return {
+        success: false,
+        type: intent.type,
+        executionAllowed: false,
+        externalExecution: false,
+        failClosed: true
+      };
+    }
+
+    if (intent.intent === "action") {
+      return {
+        success: true,
+        type: "action_proposal",
+        intent: "action",
+        approvalRequired: true,
+        executionAllowed: false,
+        externalExecution: true,
+        executable: false,
+        proposal: intent.proposal
+      };
+    }
+
+    if (
+      !this.geminiAdapter ||
+      typeof this.geminiAdapter.execute !== "function"
+    ) {
+      return {
+        success: false,
+        type: "ai_inference_unavailable",
+        intent: "conversation",
+        approvalRequired: false,
+        executionAllowed: false,
+        externalExecution: false,
+        failClosed: true,
+        message: "مسار استدلال المحادثة غير متاح."
+      };
+    }
+
+    const resilienceResult = await this.geminiResilience.execute(
+      () =>
+        this.geminiAdapter.execute(
+          {
+            prompt: text,
+            ...(options.payload || {})
+          },
+          {
+            ...(options.context || {}),
+            channel: "chat",
+            intent: "conversation"
+          }
+        ),
       {
-        approved: options.approved === true,
-        requiresApproval: options.requiresApproval === true
+        ...(options.context || {}),
+        channel: "chat",
+        intent: "conversation",
+        sessionId: options.context?.sessionId || null
       }
     );
+
+    if (!resilienceResult || resilienceResult.success !== true) {
+      return {
+        success: false,
+        type: resilienceResult?.type || "chat_inference_failed",
+        intent: "conversation",
+        approvalRequired: false,
+        executionAllowed: false,
+        externalExecution: false,
+        failClosed: true,
+        result: resilienceResult?.result || null,
+        resilience: resilienceResult
+      };
+    }
+
+    const inferenceResult = resilienceResult.result;
+
+    if (!inferenceResult || inferenceResult.success !== true) {
+      return {
+        success: false,
+        type: inferenceResult?.type || "chat_inference_failed",
+        intent: "conversation",
+        approvalRequired: false,
+        executionAllowed: false,
+        externalExecution: false,
+        failClosed: true,
+        result: inferenceResult || null,
+        resilience: resilienceResult
+      };
+    }
+
+    return {
+      success: true,
+      type: "conversation_response",
+      intent: "conversation",
+      approvalRequired: false,
+      executionAllowed: false,
+      externalExecution: false,
+      text: inferenceResult.text || "",
+      model: inferenceResult.model || null,
+      result: inferenceResult,
+      resilience: {
+        attempts: resilienceResult.attempts,
+        retried: resilienceResult.retried,
+        maxRetries: resilienceResult.resilience?.maxRetries ?? null
+      }
+    };
   }
+
+  /**
+   * Backward-compatible AI entry point.
+   */
+  async askAI(prompt, options = {}) {
+    return this.chat(prompt, options);
+  }
+
 
   async executeApproved(approvalId, action, payload = {}, options = {}) {
     const approval = this.approvals.getAll().find(
@@ -675,8 +889,126 @@ class AgentRuntime {
   // Approval Queue
   // =================================
 
+  async executeApprovedDeveloper(approvalId) {
+    const approval = this.approvals.getAll().find(
+      item => item.id === approvalId
+    );
+
+    if (!approval) {
+      return {
+        success: false,
+        type: "approval_not_found",
+        executionAllowed: false,
+        failClosed: true,
+        message: `الموافقة "${approvalId}" غير موجودة.`
+      };
+    }
+
+    if (approval.status !== "approved") {
+      return {
+        success: false,
+        type: "approval_required",
+        executionAllowed: false,
+        failClosed: true,
+        message: "لا يمكن تنفيذ مهمة التطوير قبل موافقة المستخدم."
+      };
+    }
+
+    if (approval.planId !== "developer_coding") {
+      return {
+        success: false,
+        type: "developer_plan_mismatch",
+        executionAllowed: false,
+        failClosed: true,
+        message: "الموافقة لا تخص مسار التطوير البرمجي."
+      };
+    }
+
+    const task =
+      approval.plan &&
+      typeof approval.plan.task === "string"
+        ? approval.plan.task.trim()
+        : "";
+
+    if (!task) {
+      return {
+        success: false,
+        type: "developer_task_missing",
+        executionAllowed: false,
+        failClosed: true,
+        message: "مهمة التطوير غير موجودة داخل الموافقة."
+      };
+    }
+
+    return this.executeApproved(
+      approvalId,
+      "developer_coding",
+      { task },
+      { approved: true }
+    );
+  }
+
   createApproval(plan) {
     return this.approvals.create(plan);
+  }
+
+  createDeveloperApproval(request = {}) {
+    const plan = this.planRegistry.get("developer_coding");
+
+    if (!plan) {
+      return {
+        success: false,
+        type: "developer_plan_unavailable",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    const task =
+      request && typeof request.task === "string"
+        ? request.task.trim()
+        : "";
+
+    if (!task) {
+      return {
+        success: false,
+        type: "developer_task_required",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    const approvalPlan = {
+      id: plan.id,
+      name: plan.name,
+      category: plan.category,
+      steps: plan.steps.map(step => ({
+        ...step
+      })),
+      task
+    };
+
+    const approval = this.createApproval(approvalPlan);
+
+    if (!approval || approval.success !== true) {
+      return {
+        success: false,
+        type: "developer_approval_creation_failed",
+        executionAllowed: false,
+        failClosed: true,
+        approval: approval || null
+      };
+    }
+
+    return {
+      success: true,
+      type: "developer_coding_approval_created",
+      approved: false,
+      approvalRequired: true,
+      executionAllowed: false,
+      plan: approvalPlan,
+      approval: approval.item || null
+    };
   }
 
   createRevenuePlanWithApproval(opportunityId, target = "online") {

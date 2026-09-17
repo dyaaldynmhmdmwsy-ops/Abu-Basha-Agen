@@ -14,35 +14,45 @@ class ModelRegistry {
         family: "gemini",
         capability: "text",
         tier: "advanced",
-        status: "stable"
+        status: "stable",
+        fallbackEligible: false,
+        fallbackPriority: 0
       }],
       ["gemini-3.7-flash", {
         id: "gemini-3.7-flash",
         family: "gemini",
         capability: "text",
         tier: "advanced",
-        status: "stable"
+        status: "stable",
+        fallbackEligible: true,
+        fallbackPriority: 100
       }],
       ["gemini-3.6-flash", {
         id: "gemini-3.6-flash",
         family: "gemini",
         capability: "text",
         tier: "standard",
-        status: "stable"
+        status: "stable",
+        fallbackEligible: true,
+        fallbackPriority: 90
       }],
       ["gemini-3.5-flash", {
         id: "gemini-3.5-flash",
         family: "gemini",
         capability: "text",
         tier: "standard",
-        status: "stable"
+        status: "stable",
+        fallbackEligible: true,
+        fallbackPriority: 80
       }],
       ["gemini-3.5-flash-lite", {
         id: "gemini-3.5-flash-lite",
         family: "gemini",
         capability: "text",
         tier: "lite",
-        status: "stable"
+        status: "stable",
+        fallbackEligible: true,
+        fallbackPriority: 70
       }]
     ]);
   }

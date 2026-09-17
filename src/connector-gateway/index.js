@@ -25,7 +25,8 @@ class ConnectorGateway {
     hub,
     resolver,
     policy,
-    executionGate
+    executionGate,
+    auditStore
   } = {}) {
     if (!hub) {
       throw new Error("ConnectorGateway يحتاج Connector Hub");
@@ -51,6 +52,12 @@ class ConnectorGateway {
     this.resolver = resolver;
     this.policy = policy;
     this.executionGate = executionGate;
+
+    if (!auditStore || typeof auditStore.append !== "function") {
+      throw new Error("ConnectorGateway يحتاج Audit Store");
+    }
+
+    this.auditStore = auditStore;
 
     this.history = [];
   }

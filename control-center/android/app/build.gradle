@@ -1,0 +1,204 @@
+apply plugin: 'com.android.application'
+
+def gradlePropertyOrEnv = { String name ->
+    def propertyValue = project.findProperty(name)
+    if (propertyValue != null && propertyValue.toString().trim()) {
+        return propertyValue.toString()
+    }
+    return System.getenv(name)
+}
+
+def releaseCredentialFile =
+        gradlePropertyOrEnv('ABU_BASHA_RELEASE_CREDENTIAL_FILE')
+
+def releaseKeystorePath =
+        gradlePropertyOrEnv('ABU_BASHA_RELEASE_KEYSTORE')
+def releaseStorePassword =
+        gradlePropertyOrEnv('ABU_BASHA_RELEASE_STORE_PASSWORD')
+def releaseKeyAlias =
+        gradlePropertyOrEnv('ABU_BASHA_RELEASE_KEY_ALIAS')
+def releaseKeyPassword =
+        gradlePropertyOrEnv('ABU_BASHA_RELEASE_KEY_PASSWORD')
+
+if (releaseCredentialFile) {
+    def credentialFile = file(releaseCredentialFile)
+
+    if (!credentialFile.isFile()) {
+        throw new GradleException(
+            "Release credential file does not exist."
+        )
+    }
+
+    def credentialText = credentialFile.getText("UTF-8")
+        .replace("\\uFEFF", "")
+        .replace("\\r", "")
+
+    def credentialLines = credentialText.split("\\n") as List
+
+    while (!credentialLines.isEmpty() && credentialLines[-1].isEmpty()) {
+        credentialLines.remove(credentialLines.size() - 1)
+    }
+
+    def requiredCredentialKeys = [
+        "ABU_BASHA_RELEASE_KEYSTORE",
+        "ABU_BASHA_RELEASE_KEY_ALIAS",
+        "ABU_BASHA_RELEASE_STORE_PASSWORD",
+        "ABU_BASHA_RELEASE_KEY_PASSWORD"
+    ]
+
+    def credentialMap = [:]
+
+    credentialLines.each { rawLine ->
+        def line = rawLine.trim()
+
+        if (!line) {
+            throw new GradleException(
+                "Release credential file format is invalid."
+            )
+        }
+
+        def separator = line.indexOf("=")
+
+        if (separator <= 0) {
+            throw new GradleException(
+                "Release credential file format is invalid."
+            )
+        }
+
+        def key = line.substring(0, separator)
+            .replace("\\uFEFF", "")
+            .trim()
+
+        def value = line.substring(separator + 1)
+
+        if (!requiredCredentialKeys.contains(key)) {
+            throw new GradleException(
+                "Release credential file contains an unexpected key."
+            )
+        }
+
+        if (credentialMap.containsKey(key)) {
+            throw new GradleException(
+                "Release credential file contains duplicate keys."
+            )
+        }
+
+        if (value.isEmpty()) {
+            throw new GradleException(
+                "Release credential file contains an empty value."
+            )
+        }
+
+        credentialMap[key] = value
+    }
+
+    requiredCredentialKeys.each { key ->
+        if (!credentialMap.containsKey(key) ||
+                credentialMap[key] == null ||
+                credentialMap[key].isEmpty()) {
+            throw new GradleException(
+                "Release credential file is missing a required value."
+            )
+        }
+    }
+
+    releaseKeystorePath = credentialMap["ABU_BASHA_RELEASE_KEYSTORE"]
+    releaseKeyAlias = credentialMap["ABU_BASHA_RELEASE_KEY_ALIAS"]
+    releaseStorePassword = credentialMap["ABU_BASHA_RELEASE_STORE_PASSWORD"]
+    releaseKeyPassword = credentialMap["ABU_BASHA_RELEASE_KEY_PASSWORD"]
+}
+
+def releaseSigningReady =
+        releaseKeystorePath &&
+        releaseStorePassword &&
+        releaseKeyAlias &&
+        releaseKeyPassword
+
+android {
+    namespace = "com.abubasha.agent"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.abubasha.agent"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 1
+        versionName "1.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        release {
+            if (releaseSigningReady) {
+                storeFile file(releaseKeystorePath)
+                storePassword releaseStorePassword
+                keyAlias releaseKeyAlias
+                keyPassword releaseKeyPassword
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            if (releaseSigningReady) {
+                signingConfig signingConfigs.release
+            }
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+        diagnostic {
+            applicationIdSuffix ".diagnostic"
+            versionNameSuffix "-diagnostic"
+            debuggable true
+            minifyEnabled false
+            matchingFallbacks = ['debug']
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    tasks.configureEach {
+        if (name.toLowerCase().contains('release')) {
+            doFirst {
+                if (!releaseSigningReady) {
+                    throw new GradleException(
+                        "Release signing is not configured. " +
+                        "Set ABU_BASHA_RELEASE_KEYSTORE, ABU_BASHA_RELEASE_STORE_PASSWORD, " +
+                        "ABU_BASHA_RELEASE_KEY_ALIAS, and ABU_BASHA_RELEASE_KEY_PASSWORD."
+                    )
+                }
+            }
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
