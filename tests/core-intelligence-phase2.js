@@ -9,14 +9,14 @@ if (registry.getStatus().status !== "online") {
   throw new Error("REGISTRY_OFFLINE");
 }
 
-if (!registry.has("gemini-3.6-flash")) {
+if (!registry.has("gemini-3.8-flash")) {
   throw new Error("DEFAULT_MODEL_MISSING");
 }
 
 const router = new ModelRouter({ registry });
 
 const selected = router.resolve();
-if (!selected.success || selected.model.id !== "gemini-3.6-flash") {
+if (!selected.success || selected.model.id !== "gemini-3.8-flash") {
   throw new Error("DEFAULT_ROUTING_FAILED");
 }
 

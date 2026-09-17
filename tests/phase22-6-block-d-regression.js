@@ -12,16 +12,48 @@ const APP_PATH = path.join(ROOT, "control-center", "src", "App.tsx");
 const API_PATH = path.join(ROOT, "control-center", "src", "api.ts");
 const VITE_PATH = path.join(ROOT, "control-center", "vite.config.ts");
 
+let TEST_PORT = null;
+
+async function reserveTestPort() {
+  const net = require("net");
+
+  return new Promise((resolve, reject) => {
+    const probe = net.createServer();
+
+    probe.once("error", reject);
+
+    probe.listen(0, "127.0.0.1", () => {
+      const address = probe.address();
+
+      if (!address || typeof address === "string") {
+        probe.close(() => reject(new Error("test_port_resolution_failed")));
+        return;
+      }
+
+      const port = address.port;
+
+      probe.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+
+        resolve(port);
+      });
+    });
+  });
+}
+
 function read(file) {
   return fs.readFileSync(file, "utf8");
 }
 
-function request(pathname) {
+function request(pathname, port = TEST_PORT) {
   return new Promise((resolve, reject) => {
     const req = http.get(
       {
         hostname: "127.0.0.1",
-        port: 3000,
+        port,
         path: pathname,
         headers: {
           Accept: "application/json"
@@ -131,6 +163,14 @@ async function stopChild(child) {
 }
 
 async function main() {
+  TEST_PORT = await reserveTestPort();
+
+  if (!Number.isInteger(TEST_PORT) || TEST_PORT < 1 || TEST_PORT > 65535) {
+    throw new Error("invalid_test_port");
+  }
+
+  console.log(`TEST_PORT=${TEST_PORT}`);
+
   const pkg = JSON.parse(read(PACKAGE_PATH));
   const app = read(APP_PATH);
   const api = read(API_PATH);
@@ -148,8 +188,8 @@ async function main() {
   );
 
   assert.ok(
-    api.includes('const API_BASE = "/api"'),
-    "frontend API must use the relative API boundary"
+    api.includes('const API_BASE = "http://127.0.0.1:3000/api"'),
+    "frontend API must use the canonical loopback API boundary"
   );
 
   assert.ok(
@@ -213,7 +253,11 @@ async function main() {
     ["src/startup.js"],
     {
       cwd: ROOT,
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        AGENT_HOST: "127.0.0.1",
+        AGENT_PORT: String(TEST_PORT)
+      },
       stdio: ["ignore", "pipe", "pipe"],
       detached: process.platform !== "win32"
     }
@@ -292,7 +336,9 @@ async function main() {
   }
 
   if (
-    stdout.includes("Agent production startup listening on 127.0.0.1:3000")
+    stdout.includes(
+      `Agent production startup listening on 127.0.0.1:${TEST_PORT}`
+    )
   ) {
     console.log("STARTUP_CONTRACT=PASS");
   }

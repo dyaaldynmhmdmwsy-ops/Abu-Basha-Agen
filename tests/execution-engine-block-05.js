@@ -2,6 +2,7 @@
 
 const assert = require("assert");
 const PlanExecutor = require("../src/plan-executors");
+const AuditStore = require("../src/observability/audit-store");
 
 async function main() {
   console.log("========================================");
@@ -51,6 +52,10 @@ async function main() {
     },
 
     connectorPolicy: null,
+
+    auditStore: new AuditStore({
+      dbPath: ":memory:"
+    }),
 
     developerTools: {
       getStatus() {

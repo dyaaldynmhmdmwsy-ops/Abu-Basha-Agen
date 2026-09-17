@@ -60,8 +60,9 @@ function check(name, condition) {
   adapter.apiKey = "TEST_ONLY_NOT_A_REAL_KEY";
   adapter.client = {
     models: {
-      generateContent: async ({ contents }) => {
+      generateContent: async ({ config, contents }) => {
         adapter.__generateCalls = (adapter.__generateCalls || 0) + 1;
+        adapter.__lastConfig = config;
         adapter.__lastContents = contents;
         return { text: "TEST_GEMINI_RESPONSE" };
       }
@@ -87,8 +88,14 @@ function check(name, condition) {
   );
   check(
     "ADAPTER_PRESERVES_SYSTEM_PROMPT",
+    adapter.__lastConfig &&
+      typeof adapter.__lastConfig.systemInstruction === "string" &&
+      adapter.__lastConfig.systemInstruction.includes("اسم الوكيل: وكيل أبو بشة.")
+  );
+  check(
+    "ADAPTER_SYSTEM_PROMPT_NOT_IN_CONTENTS",
     typeof adapter.__lastContents === "string" &&
-      adapter.__lastContents.includes("اسم الوكيل: وكيل أبو بشة.")
+      !adapter.__lastContents.includes("اسم الوكيل: وكيل أبو بشة.")
   );
   check(
     "ADAPTER_DELIMITS_UNTRUSTED_INPUT",

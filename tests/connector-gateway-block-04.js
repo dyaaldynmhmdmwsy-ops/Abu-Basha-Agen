@@ -24,6 +24,9 @@ const MockConnector =
 
 const ExecutionGate = require("../src/security/execution-gate");
 
+const AuditStore =
+  require("../src/observability/audit-store");
+
 const ConnectorGateway =
   require(
     "../src/connector-gateway"
@@ -50,12 +53,18 @@ async function main() {
     failClosed: true
   });
 
+  const auditStore =
+    new AuditStore({
+      dbPath: ":memory:"
+    });
+
   const gateway =
     new ConnectorGateway({
       hub,
       resolver,
       policy,
-      executionGate
+      executionGate,
+      auditStore
     });
 
   assert.strictEqual(
@@ -225,7 +234,8 @@ async function main() {
       hub: approvalHub,
       resolver: approvalResolver,
       policy: approvalPolicy,
-      executionGate
+      executionGate,
+      auditStore
     });
 
   const denied =
