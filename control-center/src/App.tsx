@@ -798,7 +798,10 @@ function App() {
                   : "hub-nav-item"
               }
               type="button"
-              onClick={() => setActiveWorkspace(hub.id)}
+              onClick={() => {
+                setActiveWorkspace(hub.id);
+                setActive(hub.id === "chat" ? "chat" : "overview");
+              }}
               aria-current={activeHub.id === hub.id ? "page" : undefined}
             >
               <span className="hub-nav-icon">
@@ -1919,7 +1922,10 @@ function App() {
           <button
             key={section.id}
             className={active === section.id ? "nav-item active" : "nav-item"}
-            onClick={() => setActive(section.id)}
+            onClick={() => {
+              setActive(section.id);
+              setActiveWorkspace("chat");
+            }}
             type="button"
           >
             <span>{section.icon}</span>
