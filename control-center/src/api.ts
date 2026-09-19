@@ -419,6 +419,73 @@ export type DeveloperExecutionResponse = {
 };
 
 
+
+export type VoiceSynthesisResponse = {
+  success: boolean;
+  type: string;
+  model?: string;
+  audio?: {
+    data?: string;
+    mimeType?: string;
+  };
+  executionAllowed?: boolean;
+  externalExecution?: boolean;
+  actionExecution?: string;
+  requiresApproval?: boolean;
+  failClosed?: boolean;
+  message?: string;
+  [key: string]: unknown;
+};
+
+export async function synthesizeVoice(
+  text: string,
+  options: Record<string, unknown> = {}
+): Promise<VoiceSynthesisResponse> {
+  const input = text.trim();
+
+  if (!input) {
+    throw new Error("voice text is required");
+  }
+
+  await waitForRuntimeReady();
+
+  const response = await CapacitorHttp.request({
+    url: `${API_BASE}/voice/synthesize`,
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json"
+    },
+    data: {
+      text: input,
+      options
+    },
+    connectTimeout: 10000,
+    readTimeout: 40000
+  });
+
+  if (response.status < 200 || response.status >= 300) {
+    throw new Error(`Voice API request failed: ${response.status}`);
+  }
+
+  try {
+    if (typeof response.data === "string") {
+      return JSON.parse(response.data) as VoiceSynthesisResponse;
+    }
+
+    if (
+      response.data !== null &&
+      typeof response.data === "object"
+    ) {
+      return response.data as VoiceSynthesisResponse;
+    }
+  } catch {
+    throw new Error("تعذر قراءة استجابة الصوت");
+  }
+
+  throw new Error("استجابة الصوت غير صالحة");
+}
+
 export async function createDeveloperApproval(
   task: string
 ): Promise<DeveloperApprovalResponse> {

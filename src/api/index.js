@@ -49,6 +49,25 @@ class ApiBoundary {
     };
   }
 
+  async synthesizeVoice(text, options = {}) {
+    if (
+      !this.runtime ||
+      typeof this.runtime.synthesizeVoice !== "function"
+    ) {
+      return {
+        success: false,
+        type: "voice_runtime_capability_unavailable",
+        executionAllowed: false,
+        externalExecution: false,
+        actionExecution: "presentation_only",
+        requiresApproval: true,
+        failClosed: true
+      };
+    }
+
+    return this.runtime.synthesizeVoice(text, options);
+  }
+
   async chat(prompt, options = {}) {
     if (!this.runtime || typeof this.runtime.chat !== "function") {
       return {

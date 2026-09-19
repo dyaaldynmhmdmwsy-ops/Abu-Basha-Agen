@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "capacitor:sync:after": "node scripts/capacitor-sync-after.cjs"
   },
   "dependencies": {
     "@capacitor/android": "^8.5.1",

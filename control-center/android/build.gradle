@@ -17,6 +17,31 @@ buildscript {
 
 apply from: "variables.gradle"
 
+def capacitorVersionProperties = [
+    "androidxActivityVersion": rootProject.ext.androidxActivityVersion,
+    "androidxAppCompatVersion": rootProject.ext.androidxAppCompatVersion,
+    "androidxCoordinatorLayoutVersion": rootProject.ext.androidxCoordinatorLayoutVersion,
+    "androidxCoreVersion": rootProject.ext.androidxCoreVersion,
+    "androidxFragmentVersion": rootProject.ext.androidxFragmentVersion,
+    "androidxWebkitVersion": rootProject.ext.androidxWebkitVersion,
+    "junitVersion": rootProject.ext.junitVersion,
+    "androidxJunitVersion": rootProject.ext.androidxJunitVersion,
+    "androidxEspressoCoreVersion": rootProject.ext.androidxEspressoCoreVersion,
+    "cordovaAndroidVersion": rootProject.ext.cordovaAndroidVersion,
+    "compileSdkVersion": rootProject.ext.compileSdkVersion,
+    "minSdkVersion": rootProject.ext.minSdkVersion,
+    "targetSdkVersion": rootProject.ext.targetSdkVersion
+]
+
+gradle.beforeProject { project ->
+    capacitorVersionProperties.each { key, value ->
+        if (!project.ext.has(key)) {
+            project.ext.set(key, value)
+        }
+    }
+}
+
+
 allprojects {
     repositories {
         google()

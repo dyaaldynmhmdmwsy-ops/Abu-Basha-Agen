@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef,
+  useState } from "react";
 import {
   approveApproval,
   getApprovalStatus,
@@ -28,6 +29,7 @@ import {
   createDeveloperApproval,
   executeApprovedDeveloper,
   chat,
+  synthesizeVoice,
   type ChatApprovalResponse,
   type ChatExecutionResponse,
   type DeveloperApprovalResponse,
@@ -134,6 +136,7 @@ function App() {
   >([]);
   const [chatLoading, setChatLoading] = useState(false);
   const [voiceListening, setVoiceListening] = useState(false);
+  const [voiceSpeaking, setVoiceSpeaking] = useState(false);
   const [chatToolsOpen, setChatToolsOpen] = useState(false);
   const [chatApproval, setChatApproval] =
     useState<ChatApprovalResponse["approval"] | null>(null);
@@ -151,6 +154,10 @@ function App() {
     useState<DeveloperExecutionResponse | null>(null);
 
   const [error, setError] = useState("");
+
+  const voiceAudioContextRef = useRef<AudioContext | null>(null);
+  const voiceSourceRef = useRef<AudioBufferSourceNode | null>(null);
+  const voiceRequestRef = useRef(0);
 
   const loadApprovals = useCallback(async () => {
     setApprovalLoading(true);
@@ -479,6 +486,8 @@ function App() {
           }
         ]);
 
+        void playVoiceText(assistantText);
+
         return;
       }
 
@@ -654,6 +663,155 @@ function App() {
   const activeSection = sections.find((item) => item.id === active);
   const monitorVisible = active === "plans" || active === "execution";
 
+
+  const stopVoicePlayback = useCallback(() => {
+    voiceRequestRef.current += 1;
+
+    const source = voiceSourceRef.current;
+
+    if (source) {
+      try {
+        source.stop();
+      } catch {
+        // Source may already be stopped.
+      }
+
+      try {
+        source.disconnect();
+      } catch {
+        // Ignore cleanup failures.
+      }
+
+      voiceSourceRef.current = null;
+    }
+
+    setVoiceSpeaking(false);
+  }, []);
+
+  const playVoiceText = useCallback(
+    async (text: string) => {
+      const input = text.trim();
+
+      if (!input) {
+        return;
+      }
+
+      stopVoicePlayback();
+
+      const requestId = ++voiceRequestRef.current;
+
+      try {
+        const result = await synthesizeVoice(input, {
+          languageCode: "ar-SA"
+        });
+
+        if (requestId !== voiceRequestRef.current) {
+          return;
+        }
+
+        if (
+          !result.success ||
+          result.type !== "live_voice_audio_ready" ||
+          !result.audio?.data
+        ) {
+          throw new Error(
+            result.message || "تعذر تجهيز الصوت"
+          );
+        }
+
+        const mimeType =
+          result.audio.mimeType || "audio/pcm;rate=24000";
+
+        if (!mimeType.toLowerCase().startsWith("audio/pcm")) {
+          throw new Error(
+            "صيغة الصوت المستلمة غير مدعومة للتشغيل الآمن."
+          );
+        }
+
+        const binary = window.atob(result.audio.data);
+        const byteLength = binary.length;
+
+        if (byteLength < 2 || byteLength % 2 !== 0) {
+          throw new Error("بيانات PCM الصوتية غير صالحة.");
+        }
+
+        const pcm = new Int16Array(byteLength / 2);
+
+        for (let index = 0; index < pcm.length; index += 1) {
+          const low = binary.charCodeAt(index * 2);
+          const high = binary.charCodeAt(index * 2 + 1);
+          pcm[index] = (high << 8) | low;
+        }
+
+        const audioContext =
+          voiceAudioContextRef.current ||
+          new AudioContext();
+
+        voiceAudioContextRef.current = audioContext;
+
+        if (audioContext.state === "suspended") {
+          await audioContext.resume();
+        }
+
+        if (requestId !== voiceRequestRef.current) {
+          return;
+        }
+
+        const sampleRate = 24000;
+
+        const audioBuffer = audioContext.createBuffer(
+          1,
+          pcm.length,
+          sampleRate
+        );
+
+        const channel = audioBuffer.getChannelData(0);
+
+        for (let index = 0; index < pcm.length; index += 1) {
+          channel[index] = pcm[index] / 32768;
+        }
+
+        const source = audioContext.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioContext.destination);
+
+        source.onended = () => {
+          if (voiceSourceRef.current === source) {
+            voiceSourceRef.current = null;
+            setVoiceSpeaking(false);
+          }
+        };
+
+        voiceSourceRef.current = source;
+        setVoiceSpeaking(true);
+        source.start(0);
+      } catch (voiceError) {
+        if (requestId !== voiceRequestRef.current) {
+          return;
+        }
+
+        setVoiceSpeaking(false);
+
+        setChatMessages((messages) => [
+          ...messages,
+          {
+            role: "assistant",
+            content:
+              "تعذر تشغيل الرد الصوتي، بينما يبقى الرد النصي متاحًا."
+          }
+        ]);
+
+        console.warn(
+          "Live voice playback failed:",
+          voiceError instanceof Error
+            ? voiceError.message
+            : voiceError
+        );
+      }
+    },
+    [stopVoicePlayback]
+  );
+
   const handleVoiceInput = () => {
     const speechWindow = window as typeof window & {
       SpeechRecognition?: BrowserSpeechRecognitionConstructor;
@@ -770,6 +928,20 @@ function App() {
       </svg>
     );
   };
+
+
+  useEffect(() => {
+    return () => {
+      stopVoicePlayback();
+
+      const context = voiceAudioContextRef.current;
+
+      if (context) {
+        void context.close();
+        voiceAudioContextRef.current = null;
+      }
+    };
+  }, [stopVoicePlayback]);
 
   return (
     <div className="app-shell modern-platform-shell" dir="rtl">
@@ -1561,6 +1733,34 @@ function App() {
                           <div className="chat-message-content">
                             {message.content}
                           </div>
+                          {message.role === "assistant" ? (
+                            <div className="chat-message-actions">
+                              <button
+                                className="chat-message-voice-button"
+                                type="button"
+                                onClick={() => {
+                                  if (voiceSpeaking) {
+                                    stopVoicePlayback();
+                                    return;
+                                  }
+
+                                  void playVoiceText(message.content);
+                                }}
+                                aria-label={
+                                  voiceSpeaking
+                                    ? "إيقاف الرد الصوتي"
+                                    : "تشغيل الرد صوتيًا"
+                                }
+                                title={
+                                  voiceSpeaking
+                                    ? "إيقاف الصوت"
+                                    : "تشغيل الصوت"
+                                }
+                              >
+                                {voiceSpeaking ? "■" : "🔊"}
+                              </button>
+                            </div>
+                          ) : null}
                         </div>
                       </div>
                     ))}
@@ -1889,6 +2089,11 @@ function App() {
                 </div>
 
                 <div className="chat-composer-hint">
+                  <span>
+                    {voiceSpeaking
+                      ? "يتحدث أبو بشة..."
+                      : "الصوت المباشر متاح"}
+                  </span>
                   <span>صورة</span>
                   <span>فيديو</span>
                   <span>ملف</span>

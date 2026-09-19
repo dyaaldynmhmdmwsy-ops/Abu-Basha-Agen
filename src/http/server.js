@@ -304,6 +304,45 @@ function createHttpBridge(options = {}) {
       );
     }
 
+    if (
+      method === "POST" &&
+      path === "/api/voice/synthesize"
+    ) {
+      const body = await readJsonBody(req);
+
+      const text =
+        typeof body.text === "string"
+          ? body.text.trim()
+          : "";
+
+      if (!text) {
+        return errorResponse(
+          res,
+          400,
+          "tts_text_required"
+        );
+      }
+
+      const result = await api.synthesizeVoice(
+        text,
+        body.options || {}
+      );
+
+      return jsonResponse(
+        res,
+        result && result.success === true ? 200 : 400,
+        result || {
+          success: false,
+          type: "tts_failed",
+          executionAllowed: false,
+          externalExecution: false,
+          actionExecution: "presentation_only",
+          requiresApproval: true,
+          failClosed: true
+        }
+      );
+    }
+
     if (method === "POST" && path === "/api/chat") {
         const body = await readJsonBody(req);
         const prompt = typeof body.prompt === "string"

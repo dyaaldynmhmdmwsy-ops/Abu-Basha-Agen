@@ -27,6 +27,8 @@ const ConnectorHub = require("../connectors/hub");
 const HubMockConnector = require("../connectors/hub/mock-connector");
 const ConnectorResolver = require("../connectors/resolver");
 const GeminiAdapter = require("../connectors/adapters/gemini-adapter");
+const VoiceCapability = require("../capabilities/voice");
+const GeminiLiveAdapter = require("../connectors/adapters/gemini-live-adapter");
 const ResilienceManager = require("../resilience");
 const AuditStore = require("../observability/audit-store");
 class AgentRuntime {
@@ -109,6 +111,9 @@ class AgentRuntime {
     // PHASE 2 FINAL CONNECTOR BOOTSTRAP
     // Keep Manager, Executor, Hub, Resolver and Policy synchronized.    // Gemini AI Connector
     const geminiConnector = new GeminiAdapter();
+    this.voiceCapability = new VoiceCapability();
+    this.ttsProvider = new GeminiLiveAdapter();
+    this.voiceCapability.setTTSProvider(this.ttsProvider);
     this.geminiResilience = new ResilienceManager(this);
     this.geminiAdapter = geminiConnector;
 
@@ -573,6 +578,25 @@ class AgentRuntime {
    * This is inference only. It does not create approval and does not
    * enter ConnectorGateway / PlanExecutor / external execution.
    */
+  async synthesizeVoice(text, options = {}) {
+    if (
+      !this.voiceCapability ||
+      typeof this.voiceCapability.synthesize !== "function"
+    ) {
+      return {
+        success: false,
+        type: "voice_capability_unavailable",
+        executionAllowed: false,
+        externalExecution: false,
+        actionExecution: "presentation_only",
+        requiresApproval: true,
+        failClosed: true
+      };
+    }
+
+    return this.voiceCapability.synthesize(text, options);
+  }
+
   async chat(prompt, options = {}) {
     const text = typeof prompt === "string" ? prompt.trim() : "";
 

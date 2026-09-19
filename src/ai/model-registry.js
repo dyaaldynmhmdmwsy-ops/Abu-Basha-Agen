@@ -138,7 +138,9 @@ class ModelRegistry {
         continue;
       }
 
-      const supportedFamily =
+      const LIVE_VOICE_MODEL = "gemini-3.8-live";
+
+const supportedFamily =
         normalizedId.includes("flash") ||
         normalizedId.includes("pro") ||
         normalizedId.includes("embedding") ||

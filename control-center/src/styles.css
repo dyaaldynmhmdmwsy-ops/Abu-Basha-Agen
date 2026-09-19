@@ -1535,3 +1535,40 @@ input:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+
+/* Live Voice Output */
+.chat-message-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.5rem;
+}
+
+.chat-message-voice-button {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--border, rgba(255,255,255,0.12));
+  border-radius: 10px;
+  background: var(--surface-2, rgba(255,255,255,0.04));
+  color: var(--text-secondary, #aeb7c7);
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    background 160ms ease,
+    color 160ms ease;
+}
+
+.chat-message-voice-button:hover {
+  transform: translateY(-1px);
+  background: var(--surface-3, rgba(255,255,255,0.08));
+  color: var(--text-primary, #fff);
+}
+
+.chat-message-voice-button:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+
+.chat-composer-hint span:first-child {
+  color: var(--accent, #7dd3fc);
+}
