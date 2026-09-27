@@ -3,6 +3,7 @@
 const { GoogleGenAI } = require("@google/genai");
 
 const DEFAULT_LIVE_MODEL = "gemini-3.8-live";
+const DEFAULT_LIVE_VOICE = "Gacrux";
 const DEFAULT_TIMEOUT_MS = 30000;
 
 class GeminiLiveAdapter {
@@ -103,17 +104,28 @@ class GeminiLiveAdapter {
             model: this.model,
             config: {
               responseModalities: ["AUDIO"],
-              ...(options.voiceName
-                ? {
-                    speechConfig: {
-                      voiceConfig: {
-                        prebuiltVoiceConfig: {
-                          voiceName: options.voiceName
-                        }
-                      }
-                    }
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: {
+                    voiceName: options.voiceName || DEFAULT_LIVE_VOICE
                   }
-                : {})
+                }
+              },
+              systemInstruction: {
+                parts: [
+                  {
+                    text:
+                      "أنت أبو بشة AI، مساعد ذكاء اصطناعي سوداني. " +
+                      "تحدث بالعربية السودانية الطبيعية عندما يكون السياق عربيًا. " +
+                      "استخدم التعبيرات والمفردات السودانية بصورة طبيعية وغير مصطنعة، " +
+                      "ولا تحوّل اللهجة إلى خليجية أو مصرية أو شامية أو فصحى جامدة. " +
+                      "حافظ على نطق واضح ومفهوم، وإيقاع هادئ وطبيعي كحديث شخص سوداني حقيقي. " +
+                      "لا تبالغ في استخدام الكلمات السودانية ولا تضع كلمات عامية لمجرد إظهار اللهجة. " +
+                      "إذا كان النص المقدم لك فصيحًا أو يحتوي مصطلحات تقنية، حافظ على دقته " +
+                      "مع أداء صوتي سوداني طبيعي. لا تغيّر معنى الكلام ولا تضف معلومات غير موجودة."
+                  }
+                ]
+              }
             },
             callbacks: {
               onopen: () => {},

@@ -34,6 +34,19 @@ class PlanRegistry {
       ]
     });
 
+    this.register("development_pipeline", {
+      name: "Development Pipeline",
+      category: "developer",
+      steps: [
+        {
+          name: "execute_development_pipeline",
+          label: "تنفيذ مسار التطوير بعد الموافقة",
+          type: "developer",
+          tool: "development_pipeline"
+        }
+      ]
+    });
+
     this.register("telegram_service", {
       name: "Telegram Bot Service",
       category: "software",

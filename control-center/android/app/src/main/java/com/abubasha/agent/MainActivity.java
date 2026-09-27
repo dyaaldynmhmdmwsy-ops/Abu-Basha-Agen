@@ -6,6 +6,7 @@ import android.os.Bundle;
 import android.util.Log;
 
 import com.getcapacitor.BridgeActivity;
+import com.abubasha.agent.plugins.AudioRecorderPlugin;
 
 public class MainActivity extends BridgeActivity {
     private static final String TAG = "AbuBashaRuntime";
@@ -30,6 +31,7 @@ public class MainActivity extends BridgeActivity {
     @Override
     public void onCreate(Bundle savedInstanceState) {
         startProductionRuntime();
+        registerPlugin(AudioRecorderPlugin.class);
         super.onCreate(savedInstanceState);
     }
 

@@ -49,7 +49,41 @@ class ApiBoundary {
     };
   }
 
-  async synthesizeVoice(text, options = {}) {
+  async transcribeVoice(audio, context = {}) {
+    if (
+      !this.runtime ||
+      typeof this.runtime.transcribeVoice !== "function"
+    ) {
+      return {
+        success: false,
+        type: "stt_runtime_unavailable",
+        message: "Voice transcription runtime is unavailable.",
+        executionAllowed: false,
+        externalExecution: false,
+        actionExecution: "plan_only",
+        requiresApproval: true,
+        failClosed: true,
+      };
+    }
+
+    const result = await this.runtime.transcribeVoice(audio, context);
+
+    if (
+      result &&
+      result.success === true &&
+      typeof result.text === "string" &&
+      typeof result.transcript !== "string"
+    ) {
+      return {
+        ...result,
+        transcript: result.text,
+      };
+    }
+
+    return result;
+  }
+
+async synthesizeVoice(text, options = {}) {
     if (
       !this.runtime ||
       typeof this.runtime.synthesizeVoice !== "function"
@@ -81,6 +115,57 @@ class ApiBoundary {
     }
 
     return this.runtime.chat(prompt, options);
+  }
+
+  chatStream(prompt, options = {}) {
+    if (
+      !this.runtime ||
+      typeof this.runtime.chatStream !== "function"
+    ) {
+      return {
+        success: false,
+        type: "streaming_unavailable",
+        executionAllowed: false,
+        externalExecution: false,
+        failClosed: true,
+        message: "مسار Streaming غير متاح."
+      };
+    }
+
+    return this.runtime.chatStream(prompt, options);
+  }
+
+  async cancelChat(requestId) {
+    const id =
+      typeof requestId === "string"
+        ? requestId.trim()
+        : "";
+
+    if (!id) {
+      return {
+        success: false,
+        type: "invalid_chat_cancel_request",
+        executionAllowed: false,
+        externalExecution: false,
+        failClosed: true,
+        message: "معرّف طلب المحادثة مطلوب."
+      };
+    }
+
+    if (
+      !this.runtime ||
+      typeof this.runtime.cancelChat !== "function"
+    ) {
+      return {
+        success: false,
+        type: "chat_cancel_api_unavailable",
+        executionAllowed: false,
+        externalExecution: false,
+        failClosed: true
+      };
+    }
+
+    return this.runtime.cancelChat(id);
   }
 
   createChatApproval(prompt, options = {}) {
@@ -147,6 +232,18 @@ class ApiBoundary {
       type: "pending_approvals",
       items: this.runtime.getPendingApprovals()
     };
+  }
+
+  getSettings() {
+    return this.runtime.getSettings();
+  }
+
+  getSettingsStatus() {
+    return this.runtime.getSettingsStatus();
+  }
+
+  updateSettings(patch, context = {}) {
+    return this.runtime.updateSettings(patch, context);
   }
 
   getDiagnosticStatus() {
@@ -308,6 +405,74 @@ class ApiBoundary {
     };
   }
 
+  getProjectWorkspaceStatus() {
+    if (
+      !this.runtime ||
+      typeof this.runtime.getProjectWorkspaceStatus !== "function"
+    ) {
+      return {
+        success: false,
+        type: "project_workspace_api_unavailable",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    return {
+      success: true,
+      type: "project_workspace_status",
+      status: this.runtime.getProjectWorkspaceStatus()
+    };
+  }
+
+  createProjectWorkspace(request = {}) {
+    if (
+      !this.runtime ||
+      typeof this.runtime.createProjectWorkspace !== "function"
+    ) {
+      return {
+        success: false,
+        type: "project_workspace_api_unavailable",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    return this.runtime.createProjectWorkspace(request);
+  }
+
+  getProjectWorkspace(id) {
+    if (
+      !this.runtime ||
+      typeof this.runtime.getProjectWorkspace !== "function"
+    ) {
+      return {
+        success: false,
+        type: "project_workspace_api_unavailable",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    return this.runtime.getProjectWorkspace(id);
+  }
+
+  listProjectWorkspaces(type = null) {
+    if (
+      !this.runtime ||
+      typeof this.runtime.listProjectWorkspaces !== "function"
+    ) {
+      return {
+        success: false,
+        type: "project_workspace_api_unavailable",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    return this.runtime.listProjectWorkspaces(type);
+  }
+
   createDeveloperApproval(request = {}) {
     if (
       !this.runtime ||
@@ -416,6 +581,100 @@ class ApiBoundary {
     }
 
     return this.runtime.reject(approvalId);
+  }
+
+  getDevelopmentPipelineStatus() {
+    if (
+      !this.runtime ||
+      typeof this.runtime.getDevelopmentPipelineStatus !== "function"
+    ) {
+      return {
+        success: false,
+        type: "development_pipeline_unavailable",
+        failClosed: true
+      };
+    }
+
+    return this.runtime.getDevelopmentPipelineStatus();
+  }
+
+  createDevelopmentPipelineApproval(request = {}) {
+    if (
+      !this.runtime ||
+      typeof this.runtime.createDevelopmentPipelineApproval !== "function"
+    ) {
+      return {
+        success: false,
+        type: "development_pipeline_approval",
+        failClosed: true,
+        blocked: true,
+        reason: "runtime_unavailable",
+      };
+    }
+
+    return this.runtime.createDevelopmentPipelineApproval(request);
+  }
+
+  executeApprovedDevelopmentPipeline(approvalId) {
+    if (
+      !this.runtime ||
+      typeof this.runtime.executeApprovedDevelopmentPipeline !== "function"
+    ) {
+      return Promise.resolve({
+        success: false,
+        type: "development_pipeline_execution",
+        failClosed: true,
+        blocked: true,
+        reason: "runtime_unavailable",
+      });
+    }
+
+    return this.runtime.executeApprovedDevelopmentPipeline(approvalId);
+  }
+
+  createDevelopmentPipelineRequest(request = {}) {
+    if (
+      !this.runtime ||
+      typeof this.runtime.createDevelopmentPipelineRequest !== "function"
+    ) {
+      return {
+        success: false,
+        type: "development_pipeline_unavailable",
+        failClosed: true
+      };
+    }
+
+    return this.runtime.createDevelopmentPipelineRequest(request);
+  }
+
+  getDevelopmentPipelineRequest(id) {
+    if (
+      !this.runtime ||
+      typeof this.runtime.getDevelopmentPipelineRequest !== "function"
+    ) {
+      return {
+        success: false,
+        type: "development_pipeline_unavailable",
+        failClosed: true
+      };
+    }
+
+    return this.runtime.getDevelopmentPipelineRequest(id);
+  }
+
+  listDevelopmentPipelineRequests(limit = 50) {
+    if (
+      !this.runtime ||
+      typeof this.runtime.listDevelopmentPipelineRequests !== "function"
+    ) {
+      return {
+        success: false,
+        type: "development_pipeline_unavailable",
+        failClosed: true
+      };
+    }
+
+    return this.runtime.listDevelopmentPipelineRequests(limit);
   }
 
   getMetadata() {

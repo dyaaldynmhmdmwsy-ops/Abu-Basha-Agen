@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useRef,
+import { ControlWorkspace } from "./ui/ControlWorkspace";
+import { StudioWorkspace } from "./ui/StudioWorkspace";
+import { EditingWorkspace } from "./ui/EditingWorkspace";
+import { WORKSPACE_CATALOG } from "./ui";
+import { CodingWorkspace } from "./ui/CodingWorkspace";
+import "./ui/codingWorkspace.css";
+import {
+  useCallback,
+  useEffect,
+  useRef,
   useState } from "react";
 import {
   approveApproval,
@@ -29,11 +38,25 @@ import {
   createDeveloperApproval,
   executeApprovedDeveloper,
   chat,
+  chatStream,
+  cancelChat,
   synthesizeVoice,
+  getSettings,
+  updateSettings,
+  type SettingsData,
+  type SettingsResponse,
   type ChatApprovalResponse,
   type ChatExecutionResponse,
   type DeveloperApprovalResponse,
-  DeveloperExecutionResponse
+  type DeveloperExecutionResponse,
+  type ProjectWorkspace,
+  getProjectWorkspaceStatus,
+  listProjectWorkspaces,
+  createProjectWorkspace,
+  getDevelopmentPipelineStatus,
+  type DevelopmentPipelineStatusResponse,
+  AudioRecorder,
+  transcribeVoice
 } from "./api";
 
 type BrowserSpeechRecognition = {
@@ -63,25 +86,74 @@ type Section =
   | "revenue";
 
 type Hub =
+  | "overview"
   | "chat"
   | "coding"
   | "editing"
   | "studio"
-  | "control";
+  | "control"
+  | "settings";
 
 type WorkspaceId = Hub;
 
-const hubs: {
-  id: WorkspaceId;
-  label: string;
-  icon: string;
-}[] = [
-  { id: "chat", label: "المحادثة", icon: "chat" },
-  { id: "coding", label: "البرمجة", icon: "code" },
-  { id: "editing", label: "المونتاج", icon: "edit" },
-  { id: "studio", label: "الاستوديو", icon: "studio" },
-  { id: "control", label: "التحكم والأمان", icon: "control" }
-];
+const WORKSPACE_ICONS: Record<WorkspaceId, string> = {
+  overview: "overview",
+  chat: "chat",
+  coding: "code",
+  editing: "edit",
+  studio: "studio",
+  control: "control",
+  settings: "settings"
+};
+
+const hubs = WORKSPACE_CATALOG.map((workspace) => ({
+  id: workspace.id,
+  label: workspace.title,
+  icon: WORKSPACE_ICONS[workspace.id]
+}));
+
+type WorkspaceTool = {
+  id: string;
+  name: string;
+  kind: "app" | "service" | "resource";
+  status: "available" | "disabled";
+};
+
+const TOOL_CATALOG: Record<WorkspaceId, WorkspaceTool[]> = {
+  overview: [
+    { id: "quick-actions", name: "الإجراءات السريعة", kind: "service", status: "available" },
+    { id: "activity-center", name: "مركز النشاط", kind: "service", status: "available" }
+  ],
+  chat: [
+    { id: "gemini", name: "Gemini", kind: "service", status: "available" },
+    { id: "voice", name: "الصوت", kind: "service", status: "available" }
+  ],
+  coding: [
+    { id: "github", name: "GitHub", kind: "app", status: "disabled" },
+    { id: "gitlab", name: "GitLab", kind: "app", status: "disabled" },
+    { id: "documentation", name: "التوثيق", kind: "resource", status: "disabled" }
+  ],
+  editing: [
+    { id: "video-editor", name: "محرر الفيديو", kind: "app", status: "disabled" },
+    { id: "image-editor", name: "محرر الصور", kind: "app", status: "disabled" },
+    { id: "media-library", name: "مكتبة الوسائط", kind: "resource", status: "disabled" }
+  ],
+  studio: [
+    { id: "design-tools", name: "أدوات التصميم", kind: "app", status: "disabled" },
+    { id: "asset-library", name: "مكتبة الأصول", kind: "resource", status: "disabled" },
+    { id: "creative-services", name: "الخدمات الإبداعية", kind: "service", status: "disabled" }
+  ],
+  control: [
+    { id: "diagnostics", name: "مركز التشخيص", kind: "service", status: "available" },
+    { id: "approvals", name: "الموافقات", kind: "service", status: "available" },
+    { id: "audit", name: "التدقيق", kind: "service", status: "available" }
+  ],
+  settings: [
+    { id: "tool-registry", name: "سجل الأدوات", kind: "service", status: "available" },
+    { id: "security", name: "الأمان والصلاحيات", kind: "service", status: "available" },
+    { id: "appearance", name: "المظهر", kind: "service", status: "available" }
+  ]
+};
 
 /*
  * Legacy section metadata.
@@ -90,12 +162,12 @@ const hubs: {
  */
 const sections: { id: Section; label: string; icon: string }[] = [
   { id: "overview", label: "الرئيسية", icon: "⌂" },
-  { id: "chat", label: "المحادثة", icon: "✦" },
-  { id: "plans", label: "الخطط", icon: "≡" },
-  { id: "approvals", label: "الموافقات", icon: "✓" },
-  { id: "execution", label: "التنفيذ", icon: "▶" },
-  { id: "audit", label: "التدقيق", icon: "◉" },
-  { id: "revenue", label: "الأرباح", icon: "$" }
+  { id: "chat", label: "المحادثة", icon: "abu-basha-spark" },
+  { id: "plans", label: "الخطط", icon: "plans" },
+  { id: "approvals", label: "الموافقات", icon: "approvals" },
+  { id: "execution", label: "التنفيذ", icon: "execution" },
+  { id: "audit", label: "التدقيق", icon: "audit" },
+  { id: "revenue", label: "الأرباح", icon: "revenue" }
 ];
 
 function statusLabel(status?: string) {
@@ -108,6 +180,10 @@ function App() {
   const [activeWorkspace, setActiveWorkspace] =
     useState<WorkspaceId>("chat");
   const [active, setActive] = useState<Section>("chat");
+
+  const [toolHubWorkspace, setToolHubWorkspace] = useState<WorkspaceId | null>(null);
+  const [workspaceTools, setWorkspaceTools] =
+    useState<Record<WorkspaceId, WorkspaceTool[]>>(TOOL_CATALOG);
   const [planStatus, setPlanStatus] = useState<PlanStatus | null>(null);
   const [executionStatus, setExecutionStatus] =
     useState<ExecutionStatus | null>(null);
@@ -130,19 +206,324 @@ function App() {
     useState<RevenuePlan[]>([]);
   const [revenueLoading, setRevenueLoading] = useState(false);
 
+  const [settings, setSettings] = useState<SettingsData | null>(null);
+  const [settingsLoading, setSettingsLoading] = useState(false);
+  const [settingsSaving, setSettingsSaving] = useState(false);
+  const [settingsDirty, setSettingsDirty] = useState(false);
+  const [settingsSavedAt, setSettingsSavedAt] = useState<number | null>(null);
+  const [settingsMessage, setSettingsMessage] = useState("");
+  const [settingsError, setSettingsError] = useState("");
+
+  type ChatMessage = {
+    id: string;
+    role: "user" | "assistant";
+    content: string;
+    sourcePrompt?: string;
+    action?: {
+      approvalId: string;
+      prompt: string;
+      approvalRequired: true;
+      executionAllowed: false;
+      status:
+        | "pending_approval"
+        | "approved"
+        | "rejected"
+        | "executed"
+        | "failed";
+    };
+  };
+
+  type PersistedChatMessage = Omit<ChatMessage, "action"> & {
+    action?: never;
+  };
+
+  // STAGE28_CHAT_PERSISTENCE_V1
+  const CHAT_PERSISTENCE_VERSION = 1;
+  const CHAT_PERSISTENCE_PREFIX = "abu-basha-chat-messages";
+  const CHAT_PERSISTENCE_MAX_MESSAGES = 40;
+
+  const getChatPersistenceKey = (sessionId: string) => {
+    const normalizedSessionId = sessionId.trim();
+    return normalizedSessionId
+      ? `${CHAT_PERSISTENCE_PREFIX}:v${CHAT_PERSISTENCE_VERSION}:${normalizedSessionId}`
+      : null;
+  };
+
+  const isPersistedChatMessage = (
+    value: unknown
+  ): value is PersistedChatMessage => {
+    if (!value || typeof value !== "object") {
+      return false;
+    }
+
+    const candidate = value as Record<string, unknown>;
+
+    if (
+      typeof candidate.id !== "string" ||
+      !candidate.id.trim() ||
+      (candidate.role !== "user" && candidate.role !== "assistant") ||
+      typeof candidate.content !== "string"
+    ) {
+      return false;
+    }
+
+    if (
+      candidate.sourcePrompt !== undefined &&
+      typeof candidate.sourcePrompt !== "string"
+    ) {
+      return false;
+    }
+
+    // Persisted UI history is never allowed to carry executable authority.
+    if (candidate.action !== undefined) {
+      return false;
+    }
+
+    return true;
+  };
+
+  const readPersistedChatMessages = (
+    sessionId: string
+  ): PersistedChatMessage[] => {
+    const key = getChatPersistenceKey(sessionId);
+
+    if (!key || typeof window === "undefined") {
+      return [];
+    }
+
+    try {
+      const raw = window.localStorage.getItem(key);
+
+      if (!raw) {
+        return [];
+      }
+
+      const parsed: unknown = JSON.parse(raw);
+
+      if (
+        !parsed ||
+        typeof parsed !== "object" ||
+        !Array.isArray(
+          (parsed as { messages?: unknown }).messages
+        )
+      ) {
+        return [];
+      }
+
+      const messages = (
+        parsed as { messages: unknown[] }
+      ).messages;
+
+      if (!messages.every(isPersistedChatMessage)) {
+        return [];
+      }
+
+      return messages
+        .slice(-CHAT_PERSISTENCE_MAX_MESSAGES)
+        .map((message) => ({
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          ...(message.sourcePrompt?.trim()
+            ? { sourcePrompt: message.sourcePrompt.trim() }
+            : {})
+        }));
+    } catch {
+      return [];
+    }
+  };
+
+  const writePersistedChatMessages = (
+    sessionId: string,
+    messages: ChatMessage[]
+  ) => {
+    const key = getChatPersistenceKey(sessionId);
+
+    if (!key || typeof window === "undefined") {
+      return;
+    }
+
+    const persistedMessages: PersistedChatMessage[] =
+      messages
+        .filter(
+          (message) =>
+            !message.action &&
+            typeof message.id === "string" &&
+            typeof message.content === "string" &&
+            (message.role === "user" ||
+              message.role === "assistant")
+        )
+        .slice(-CHAT_PERSISTENCE_MAX_MESSAGES)
+        .map((message) => ({
+          id: message.id,
+          role: message.role,
+          content: message.content,
+          ...(message.sourcePrompt?.trim()
+            ? { sourcePrompt: message.sourcePrompt.trim() }
+            : {})
+        }));
+
+    try {
+      window.localStorage.setItem(
+        key,
+        JSON.stringify({
+          version: CHAT_PERSISTENCE_VERSION,
+          messages: persistedMessages
+        })
+      );
+    } catch {
+      // UI persistence is best-effort and never affects chat authority.
+    }
+  };
+
+  const createChatMessage = (
+    role: ChatMessage["role"],
+    content: string,
+    sourcePrompt?: string
+  ): ChatMessage => ({
+    id: `${Date.now()}-${Math.random().toString(36).slice(2)}`,
+    role,
+    content,
+    ...(sourcePrompt?.trim()
+      ? { sourcePrompt: sourcePrompt.trim() }
+      : {})
+  });
+
   const [chatInput, setChatInput] = useState("");
-  const [chatMessages, setChatMessages] = useState<
-    { role: "user" | "assistant"; content: string }[]
-  >([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatPersistenceSessionId, setChatPersistenceSessionId] =
+    useState<string | null>(null);
   const [chatLoading, setChatLoading] = useState(false);
   const [voiceListening, setVoiceListening] = useState(false);
-  const [voiceSpeaking, setVoiceSpeaking] = useState(false);
+  const [voiceSpeakingMessageId, setVoiceSpeakingMessageId] =
+    useState<string | null>(null);
   const [chatToolsOpen, setChatToolsOpen] = useState(false);
-  const [chatApproval, setChatApproval] =
-    useState<ChatApprovalResponse["approval"] | null>(null);
-  const [chatApprovalPrompt, setChatApprovalPrompt] = useState("");
+
   const [chatExecution, setChatExecution] =
     useState<ChatExecutionResponse | null>(null);
+
+  const activeChatAbortRef = useRef<AbortController | null>(null);
+  const activeChatRequestIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const sessionId = window.localStorage.getItem(
+      "abu-basha-agent-session-id"
+    )?.trim();
+
+    if (!sessionId) {
+      setChatPersistenceSessionId(null);
+      setChatMessages([]);
+      return;
+    }
+
+    setChatPersistenceSessionId(sessionId);
+
+    const restoredMessages = readPersistedChatMessages(sessionId);
+
+    // Never hydrate action-bearing state from local persistence.
+    setChatMessages(
+      restoredMessages.map((message) => ({
+        id: message.id,
+        role: message.role,
+        content: message.content,
+        ...(message.sourcePrompt
+          ? { sourcePrompt: message.sourcePrompt }
+          : {})
+      }))
+    );
+  }, []);
+
+  useEffect(() => {
+    if (!chatPersistenceSessionId) {
+      return;
+    }
+
+    writePersistedChatMessages(
+      chatPersistenceSessionId,
+      chatMessages
+    );
+  }, [chatMessages, chatPersistenceSessionId]);
+
+  const cancelChatGeneration = useCallback(() => {
+    const requestId = activeChatRequestIdRef.current;
+
+    activeChatAbortRef.current?.abort();
+
+    if (requestId) {
+      void cancelChat(requestId).catch((error) => {
+        console.warn(
+          "Chat cancellation boundary request failed:",
+          error instanceof Error ? error.message : error
+        );
+      });
+    }
+  }, []);
+
+  const loadSettings = useCallback(async () => {
+    setSettingsLoading(true);
+    setSettingsError("");
+    try {
+      const response = await getSettings();
+      setSettings(response.settings || null);
+      setSettingsDirty(false);
+      setSettingsSavedAt(null);
+    } catch (error) {
+      setSettingsError(
+        error instanceof Error ? error.message : "تعذر تحميل الإعدادات."
+      );
+    } finally {
+      setSettingsLoading(false);
+    }
+  }, []);
+
+  const saveSettings = useCallback(
+    async (patch: Partial<SettingsData>) => {
+      setSettingsSaving(true);
+      setSettingsMessage("");
+      setSettingsError("");
+      try {
+        const response: SettingsResponse = await updateSettings(patch);
+        if (response.settings) {
+          setSettings(response.settings);
+        }
+        setSettingsDirty(false);
+        setSettingsSavedAt(Date.now());
+        setSettingsMessage("تم حفظ الإعدادات.");
+      } catch (error) {
+        setSettingsError(
+          error instanceof Error ? error.message : "تعذر حفظ الإعدادات."
+        );
+      } finally {
+        setSettingsSaving(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (activeWorkspace === "settings" && !settings && !settingsLoading) {
+      void loadSettings();
+    }
+  }, [activeWorkspace, settings, settingsLoading, loadSettings]);
+
+  const patchSettings = useCallback(
+    (section: keyof SettingsData, values: Record<string, unknown>) => {
+      setSettings((current) => ({
+        ...(current || {}),
+        [section]: {
+          ...((current?.[section] as Record<string, unknown> | undefined) || {}),
+          ...values
+        }
+      }));
+      setSettingsDirty(true);
+      setSettingsMessage("");
+    },
+    []
+  );
 
   const [codingTask, setCodingTask] = useState("");
   const [codingLoading, setCodingLoading] = useState(false);
@@ -153,11 +534,196 @@ function App() {
   const [codingExecution, setCodingExecution] =
     useState<DeveloperExecutionResponse | null>(null);
 
+  const [pipelineStatus, setPipelineStatus] =
+    useState<DevelopmentPipelineStatusResponse | null>(null);
+  const [pipelineStatusLoading, setPipelineStatusLoading] =
+    useState(false);
+
+  const [projectWorkspaces, setProjectWorkspaces] =
+    useState<ProjectWorkspace[]>([]);
+  const [projectWorkspaceLoading, setProjectWorkspaceLoading] =
+    useState(false);
+  const [projectWorkspaceSaving, setProjectWorkspaceSaving] =
+    useState(false);
+  const [projectWorkspaceError, setProjectWorkspaceError] =
+    useState("");
+  const [projectWorkspaceName, setProjectWorkspaceName] =
+    useState("");
+  const [projectWorkspacePlatform, setProjectWorkspacePlatform] =
+    useState("web");
+
   const [error, setError] = useState("");
 
   const voiceAudioContextRef = useRef<AudioContext | null>(null);
   const voiceSourceRef = useRef<AudioBufferSourceNode | null>(null);
   const voiceRequestRef = useRef(0);
+
+  const ensureVoiceAudioContext = useCallback(async () => {
+    const existing = voiceAudioContextRef.current;
+
+    if (existing && existing.state !== "closed") {
+      if (existing.state === "suspended") {
+        await existing.resume();
+      }
+      return existing;
+    }
+
+    const context = new AudioContext();
+    voiceAudioContextRef.current = context;
+
+    if (context.state === "suspended") {
+      await context.resume();
+    }
+
+    return context;
+  }, []);
+  const refreshDevelopmentPipelineStatus = useCallback(async () => {
+    setPipelineStatusLoading(true);
+    try {
+      const response = await getDevelopmentPipelineStatus();
+      if (response.success && response.failClosed === true) {
+        setPipelineStatus(response);
+      } else {
+        setPipelineStatus(null);
+      }
+    } finally {
+      setPipelineStatusLoading(false);
+    }
+  }, []);
+
+  const loadProjectWorkspaces = useCallback(async () => {
+    if (
+      activeWorkspace !== "coding" &&
+      activeWorkspace !== "editing" &&
+      activeWorkspace !== "studio"
+    ) {
+      return;
+    }
+
+    setProjectWorkspaceLoading(true);
+    setProjectWorkspaceError("");
+
+    try {
+      const [statusResult, listResult] = await Promise.all([
+        getProjectWorkspaceStatus(),
+        listProjectWorkspaces(activeWorkspace)
+      ]);
+
+      if (!statusResult.success || statusResult.failClosed !== true) {
+        throw new Error("Project workspace service is unavailable.");
+      }
+
+      if (!listResult.success || listResult.failClosed !== true) {
+        throw new Error("Project workspace list is unavailable.");
+      }
+
+      setProjectWorkspaces(
+        Array.isArray(listResult.workspaces)
+          ? listResult.workspaces
+          : []
+      );
+    } catch (loadError) {
+      setProjectWorkspaces([]);
+      setProjectWorkspaceError(
+        loadError instanceof Error
+          ? loadError.message
+          : "تعذر تحميل مشاريع مساحة العمل."
+      );
+    } finally {
+      setProjectWorkspaceLoading(false);
+    }
+  }, [activeWorkspace]);
+
+  const handleCreateProjectWorkspace = useCallback(async () => {
+    const name = projectWorkspaceName.trim();
+
+    if (
+      !name ||
+      (activeWorkspace !== "coding" &&
+        activeWorkspace !== "editing" &&
+        activeWorkspace !== "studio")
+    ) {
+      return;
+    }
+
+    setProjectWorkspaceSaving(true);
+    setProjectWorkspaceError("");
+
+    try {
+      const response = await createProjectWorkspace({
+        name,
+        type: activeWorkspace,
+        platform: projectWorkspacePlatform,
+        status: "active"
+      });
+
+      if (
+        !response.success ||
+        response.failClosed !== true ||
+        !response.workspace
+      ) {
+        throw new Error("Project workspace creation was blocked.");
+      }
+
+      setProjectWorkspaces((current) => [
+        response.workspace as ProjectWorkspace,
+        ...current.filter(
+          (workspace) => workspace.id !== response.workspace?.id
+        )
+      ]);
+      setProjectWorkspaceName("");
+    } catch (createError) {
+      setProjectWorkspaceError(
+        createError instanceof Error
+          ? createError.message
+          : "تعذر إنشاء مساحة المشروع."
+      );
+    } finally {
+      setProjectWorkspaceSaving(false);
+    }
+  }, [
+    activeWorkspace,
+    projectWorkspaceName,
+    projectWorkspacePlatform
+  ]);
+
+  useEffect(() => {
+    if (
+      activeWorkspace === "coding" ||
+      activeWorkspace === "editing" ||
+      activeWorkspace === "studio"
+    ) {
+      void loadProjectWorkspaces();
+    }
+  }, [activeWorkspace, loadProjectWorkspaces]);
+
+  const openToolHub = useCallback((workspace: WorkspaceId) => {
+    setToolHubWorkspace(workspace);
+  }, []);
+
+  const closeToolHub = useCallback(() => {
+    setToolHubWorkspace(null);
+  }, []);
+
+  const toggleWorkspaceTool = useCallback(
+    (workspace: WorkspaceId, toolId: string) => {
+      setWorkspaceTools((current) => ({
+        ...current,
+        [workspace]: (current[workspace] || []).map((tool) =>
+          tool.id === toolId
+            ? {
+                ...tool,
+                status:
+                  tool.status === "available" ? "disabled" : "available"
+              }
+            : tool
+        )
+      }));
+    },
+    []
+  );
+
+
 
   const loadApprovals = useCallback(async () => {
     setApprovalLoading(true);
@@ -239,7 +805,13 @@ function App() {
     try {
       const result = await executeApprovedDeveloper(approvalId);
 
-      if (!result.success) {
+      console.log("[ABU_CHAT_TRACE] HANDLER_RESULT", {
+      success: result.success,
+      type: result.type,
+      intent: result.intent
+    });
+
+    if (!result.success) {
         throw new Error(
           typeof result.message === "string"
             ? result.message
@@ -442,9 +1014,8 @@ function App() {
     }
   }, []);
 
-  const handleChatSubmit = useCallback(async () => {
-    const prompt = chatInput.trim();
-
+  const handleChatSubmit = useCallback(async (overridePrompt?: string) => {
+    const prompt = (overridePrompt ?? chatInput).trim();
     if (!prompt || chatLoading) {
       return;
     }
@@ -452,49 +1023,130 @@ function App() {
     setChatLoading(true);
     setError("");
     setChatExecution(null);
-    setChatApproval(null);
-    setChatApprovalPrompt("");
 
     setChatMessages((current) => [
       ...current,
-      { role: "user", content: prompt }
+      createChatMessage("user", prompt, prompt)
     ]);
     setChatInput("");
 
+    const chatAbortController = new AbortController();
+    const requestId = crypto.randomUUID();
+    activeChatAbortRef.current = chatAbortController;
+    activeChatRequestIdRef.current = requestId;
+
+    let streamStarted = false;
+    let streamCompleted = false;
+    let streamCancelled = false;
+    let streamText = "";
+    let hasStreamActionProposal = false;
+    let streamActionApprovalRequired: boolean | undefined;
+    let streamActionExecutionAllowed: boolean | undefined;
+
+    const assistantMessage = createChatMessage(
+      "assistant",
+      "",
+      prompt
+    );
+
     try {
-      const result = await chat(prompt);
+      console.log("[ABU_CHAT_TRACE] STREAM_HANDLER_START", {
+        promptLength: prompt.length
+      });
 
-      if (!result.success) {
-        throw new Error(
-          result.message || "تعذر معالجة رسالة المحادثة"
-        );
-      }
+      void ensureVoiceAudioContext();
 
-      if (result.type === "conversation_response") {
-        const assistantText =
-          typeof result.text === "string"
-            ? result.text
-            : typeof result.message === "string"
-              ? result.message
-              : "تمت معالجة رسالتك.";
-
-        setChatMessages((current) => [
-          ...current,
-          {
-            role: "assistant",
-            content: assistantText
+      await chatStream(
+        prompt,
+        (chunk) => {
+          if (
+            chatAbortController.signal.aborted ||
+            chunk.type === "chat_generation_cancelled" ||
+            chunk.cancelled === true
+          ) {
+            streamCancelled = true;
+            return;
           }
-        ]);
 
-        void playVoiceText(assistantText);
+          if (chunk.type === "action_proposal") {
+            hasStreamActionProposal = true;
+            streamActionApprovalRequired =
+              chunk.approvalRequired;
+            streamActionExecutionAllowed =
+              chunk.executionAllowed;
+            return;
+          }
 
+          if (
+            chunk.success === false ||
+            chunk.type === "chat_stream_failed" ||
+            chunk.type === "gemini_stream_open_failed" ||
+            chunk.type === "gemini_stream_failed" ||
+            chunk.type === "streaming_unavailable"
+          ) {
+            streamCancelled = true;
+            const failureMessage =
+              typeof chunk.message === "string" && chunk.message.trim()
+                ? chunk.message
+                : "تعذر إكمال توليد الرد من مزود الذكاء الاصطناعي.";
+            throw new Error(failureMessage);
+          }
+
+          if (
+            chunk.type === "conversation_stream_chunk" &&
+            typeof chunk.text === "string"
+          ) {
+            streamStarted = true;
+            streamText += chunk.text;
+
+            setChatMessages((current) => {
+              const existing = current.some(
+                (message) => message.id === assistantMessage.id
+              );
+
+              if (existing) {
+                return current.map((message) =>
+                  message.id === assistantMessage.id
+                    ? { ...message, content: streamText }
+                    : message
+                );
+              }
+
+              return [
+                ...current,
+                {
+                  ...assistantMessage,
+                  content: streamText
+                }
+              ];
+            });
+            return;
+          }
+
+          if (chunk.type === "conversation_stream_end") {
+            streamCompleted = true;
+          }
+        },
+        {
+          requestId,
+          signal: chatAbortController.signal
+        }
+      );
+
+      if (
+        chatAbortController.signal.aborted ||
+        streamCancelled
+      ) {
         return;
       }
 
-      if (result.type === "action_proposal") {
+      if (hasStreamActionProposal) {
+        activeChatAbortRef.current = null;
+        activeChatRequestIdRef.current = null;
+
         if (
-          result.approvalRequired !== true ||
-          result.executionAllowed === true
+          streamActionApprovalRequired !== true ||
+          streamActionExecutionAllowed === true
         ) {
           throw new Error(
             "رفض آمن: عقد العملية التنفيذية غير صالح."
@@ -509,132 +1161,275 @@ function App() {
         ) {
           throw new Error(
             approval.message ||
-            "تعذر إنشاء بوابة الموافقة للعملية المقترحة."
+              "تعذر إنشاء بوابة الموافقة للعملية المقترحة."
           );
         }
 
-        setChatApproval(approval.approval);
-        setChatApprovalPrompt(prompt);
+        const actionMessage: ChatMessage = {
+          ...createChatMessage(
+            "assistant",
+            "تم تحليل طلبك كعملية تنفيذية. تمت صياغة المقترح وإنشاء طلب موافقة آمن. لن يتم التنفيذ قبل موافقتك الصريحة.",
+            prompt
+          ),
+          action: {
+            approvalId: approval.approval.id,
+            prompt,
+            approvalRequired: true,
+            executionAllowed: false,
+            status: "pending_approval"
+          }
+        };
 
         setChatMessages((current) => [
           ...current,
-          {
-            role: "assistant",
-            content:
-              "تم تحليل طلبك كعملية تنفيذية. تمت صياغة المقترح وإنشاء طلب موافقة آمن. لن يتم التنفيذ قبل موافقتك الصريحة."
-          }
+          actionMessage
         ]);
-
         return;
       }
 
-      throw new Error(
-        "استجابة المحادثة غير معروفة."
+      if (!streamStarted || !streamCompleted) {
+        throw new Error(
+          "انتهى تدفق المحادثة دون اكتمال عقد الاستجابة."
+        );
+      }
+
+      const finalAssistantMessage = {
+        ...assistantMessage,
+        content: streamText
+      };
+
+      setChatMessages((current) =>
+        current.map((message) =>
+          message.id === finalAssistantMessage.id
+            ? finalAssistantMessage
+            : message
+        )
       );
+
+      if (finalAssistantMessage.content.trim()) {
+        void playVoiceText(
+          finalAssistantMessage.content,
+          finalAssistantMessage.id
+        );
+      }
     } catch (chatError) {
+      if (
+        chatAbortController.signal.aborted ||
+        (chatError instanceof DOMException &&
+          chatError.name === "AbortError")
+      ) {
+        setError("");
+        return;
+      }
+
       const errorMessage =
         chatError instanceof Error
           ? chatError.message
           : "تعذر الاتصال بقناة المحادثة";
 
       setError(errorMessage);
-
       setChatMessages((messages) => [
         ...messages,
         {
+          id: crypto.randomUUID(),
           role: "assistant",
           content: `تعذر الحصول على رد من الوكيل: ${errorMessage}`
         }
       ]);
     } finally {
+      if (
+        activeChatAbortRef.current === chatAbortController
+      ) {
+        activeChatAbortRef.current = null;
+        activeChatRequestIdRef.current = null;
+      }
+
       setChatLoading(false);
     }
-  }, [chatInput, chatLoading]);
+  }, [
+    chatInput,
+    chatLoading,
+    ensureVoiceAudioContext
+  ]);
 
-  const handleChatApprove = useCallback(async () => {
-    if (
-      !chatApproval?.id ||
-      !chatApprovalPrompt.trim() ||
-      chatLoading
-    ) {
-      return;
-    }
-
-    setChatLoading(true);
-    setError("");
-
-    try {
-      const approvalResult = await approveApproval(chatApproval.id);
-
-      if (!approvalResult.success) {
-        throw new Error(
-          approvalResult.message || "تعذر اعتماد طلب المحادثة"
-        );
+  const handleChatApprove = useCallback(
+    async (
+      messageId: string,
+      action: NonNullable<ChatMessage["action"]>
+    ) => {
+      if (
+        !messageId ||
+        !action.approvalId ||
+        !action.prompt.trim() ||
+        chatLoading ||
+        action.approvalRequired !== true ||
+        action.executionAllowed !== false ||
+        action.status !== "pending_approval"
+      ) {
+        return;
       }
 
-      const result = await executeApprovedChat(
-        chatApproval.id,
-        chatApprovalPrompt
-      );
+      setChatLoading(true);
+      setError("");
 
-      if (!result.success) {
-        throw new Error(
-          result.message || "تعذر تنفيذ طلب المحادثة بعد الموافقة"
-        );
-      }
+      try {
+        const approvalResult = await approveApproval(action.approvalId);
 
-      setChatExecution(result);
-      setChatApproval(null);
-
-      const executionResult = result.result as {
-        steps?: Array<{
-          result?: {
-            text?: unknown;
-          } | null;
-        }>;
-      } | null;
-
-      const firstStepResult =
-        executionResult &&
-        Array.isArray(executionResult.steps) &&
-        executionResult.steps.length > 0
-          ? executionResult.steps[0]
-          : null;
-
-      const geminiResult = firstStepResult?.result || null;
-
-      const assistantText =
-        typeof result.result === "string"
-          ? result.result
-          : typeof geminiResult?.text === "string"
-            ? geminiResult.text
-            : typeof result.message === "string"
-              ? result.message
-              : "تمت معالجة طلب المحادثة بنجاح.";
-
-      setChatMessages((current) => [
-        ...current,
-        {
-          role: "assistant",
-          content: assistantText
+        if (!approvalResult.success) {
+          throw new Error(
+            approvalResult.message || "تعذر اعتماد طلب المحادثة"
+          );
         }
-      ]);
-    } catch (chatError) {
-      setError(
-        chatError instanceof Error
-          ? chatError.message
-          : "تعذر تنفيذ طلب المحادثة"
-      );
-    } finally {
-      setChatLoading(false);
-    }
-  }, [chatApproval, chatApprovalPrompt, chatLoading]);
 
-  const handleChatReject = useCallback(() => {
-    setChatApproval(null);
-    setChatApprovalPrompt("");
-    setChatExecution(null);
-  }, []);
+        setChatMessages((current) =>
+          current.map((message) =>
+            message.id === messageId && message.action
+              ? {
+                  ...message,
+                  action: {
+                    ...message.action,
+                    status: "approved"
+                  }
+                }
+              : message
+          )
+        );
+
+        const result = await executeApprovedChat(
+          action.approvalId,
+          action.prompt
+        );
+
+        if (!result.success) {
+          throw new Error(
+            result.message || "تعذر تنفيذ طلب المحادثة بعد الموافقة"
+          );
+        }
+
+        const executionResult = result.result as {
+          steps?: Array<{
+            result?: {
+              text?: unknown;
+            } | null;
+          }>;
+        } | null;
+
+        const firstStepResult =
+          executionResult &&
+          Array.isArray(executionResult.steps) &&
+          executionResult.steps.length > 0
+            ? executionResult.steps[0]
+            : null;
+
+        const geminiResult = firstStepResult?.result || null;
+
+        const assistantText =
+          typeof result.result === "string"
+            ? result.result
+            : typeof geminiResult?.text === "string"
+              ? geminiResult.text
+              : typeof result.message === "string"
+                ? result.message
+                : "تمت معالجة طلب المحادثة بنجاح.";
+
+        setChatMessages((current) =>
+          current.map((message) =>
+            message.id === messageId && message.action
+              ? {
+                  ...message,
+                  action: {
+                    ...message.action,
+                    status: "executed"
+                  }
+                }
+              : message
+          )
+        );
+
+        setChatMessages((current) => [
+          ...current,
+          createChatMessage("assistant", assistantText)
+        ]);
+      } catch (chatError) {
+        setChatMessages((current) =>
+          current.map((message) =>
+            message.id === messageId && message.action
+              ? {
+                  ...message,
+                  action: {
+                    ...message.action,
+                    status: "failed"
+                  }
+                }
+              : message
+          )
+        );
+
+        setError(
+          chatError instanceof Error
+            ? chatError.message
+            : "تعذر تنفيذ طلب المحادثة"
+        );
+      } finally {
+        setChatLoading(false);
+      }
+    },
+    [chatLoading]
+  );
+
+  const handleChatReject = useCallback(
+    async (
+      messageId: string,
+      action: NonNullable<ChatMessage["action"]>
+    ) => {
+      if (
+        !messageId ||
+        !action.approvalId ||
+        chatLoading ||
+        action.approvalRequired !== true ||
+        action.executionAllowed !== false ||
+        action.status !== "pending_approval"
+      ) {
+        return;
+      }
+
+      setChatLoading(true);
+      setError("");
+
+      try {
+        const result = await rejectApproval(action.approvalId);
+
+        if (!result.success) {
+          throw new Error(
+            result.message || "تعذر رفض طلب المحادثة"
+          );
+        }
+
+        setChatMessages((current) =>
+          current.map((message) =>
+            message.id === messageId && message.action
+              ? {
+                  ...message,
+                  action: {
+                    ...message.action,
+                    status: "rejected"
+                  }
+                }
+              : message
+          )
+        );
+      } catch (chatError) {
+        setError(
+          chatError instanceof Error
+            ? chatError.message
+            : "تعذر رفض طلب المحادثة"
+        );
+      } finally {
+        setChatLoading(false);
+      }
+    },
+    [chatLoading]
+  );
 
   useEffect(() => {
     if (active === "plans" || active === "execution" || active === "overview") {
@@ -664,6 +1459,133 @@ function App() {
   const monitorVisible = active === "plans" || active === "execution";
 
 
+  const handleCopyMessage = useCallback(async (message: ChatMessage) => {
+    const text = message.content.trim();
+
+    if (!text) {
+      return;
+    }
+
+    try {
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("الحافظة غير متاحة في بيئة التشغيل الحالية.");
+      }
+
+      await navigator.clipboard.writeText(text);
+      setError("");
+    } catch (messageError) {
+      setError(
+        messageError instanceof Error
+          ? messageError.message
+          : "تعذر نسخ الرسالة."
+      );
+    }
+  }, []);
+
+  const handleShareMessage = useCallback(async (message: ChatMessage) => {
+    const text = message.content.trim();
+
+    if (!text) {
+      return;
+    }
+
+    try {
+      if (typeof navigator.share === "function") {
+        await navigator.share({
+          text
+        });
+        setError("");
+        return;
+      }
+
+      if (!navigator.clipboard?.writeText) {
+        throw new Error("المشاركة والحافظة غير متاحتين في بيئة التشغيل الحالية.");
+      }
+
+      await navigator.clipboard.writeText(text);
+      setError("");
+    } catch (messageError) {
+      if (
+        messageError instanceof DOMException &&
+        messageError.name === "AbortError"
+      ) {
+        return;
+      }
+
+      setError(
+        messageError instanceof Error
+          ? messageError.message
+          : "تعذر مشاركة الرسالة."
+      );
+    }
+  }, []);
+
+  const handleEditMessage = useCallback((message: ChatMessage) => {
+    if (message.role !== "user") {
+      return;
+    }
+
+    const text = message.content.trim();
+
+    if (!text) {
+      return;
+    }
+
+    setChatInput(text);
+    setError("");
+  }, []);
+
+  const handleDeleteMessage = useCallback((messageId: string) => {
+    if (!messageId) {
+      return;
+    }
+
+    setChatMessages((current) => {
+      const target = current.find((message) => message.id === messageId);
+
+      // Message actions are bound to backend approval state.
+      // Never remove an action-bearing message locally because that
+      // could hide a live approval/execution state from the user.
+      if (target?.action) {
+        return current;
+      }
+
+      return current.filter((message) => message.id !== messageId);
+    });
+    setError("");
+  }, []);
+
+  const handleRetryMessage = useCallback(
+    (message: ChatMessage) => {
+      const prompt =
+        message.role === "user"
+          ? message.content.trim()
+          : message.sourcePrompt?.trim() || "";
+
+      if (!prompt || chatLoading) {
+        return;
+      }
+
+      void handleChatSubmit(prompt);
+    },
+    [chatLoading, handleChatSubmit]
+  );
+
+  const handleRegenerateMessage = useCallback(
+    (message: ChatMessage) => {
+      if (
+        message.role !== "assistant" ||
+        !message.sourcePrompt?.trim() ||
+        chatLoading
+      ) {
+        return;
+      }
+
+      void handleChatSubmit(message.sourcePrompt);
+    },
+    [chatLoading, handleChatSubmit]
+  );
+
   const stopVoicePlayback = useCallback(() => {
     voiceRequestRef.current += 1;
 
@@ -685,11 +1607,11 @@ function App() {
       voiceSourceRef.current = null;
     }
 
-    setVoiceSpeaking(false);
+    setVoiceSpeakingMessageId(null);
   }, []);
 
   const playVoiceText = useCallback(
-    async (text: string) => {
+    async (text: string, messageId: string) => {
       const input = text.trim();
 
       if (!input) {
@@ -702,7 +1624,8 @@ function App() {
 
       try {
         const result = await synthesizeVoice(input, {
-          languageCode: "ar-SA"
+          languageCode: "ar-SA",
+        messageId
         });
 
         if (requestId !== voiceRequestRef.current) {
@@ -710,8 +1633,15 @@ function App() {
         }
 
         if (
+          typeof result.messageId !== "string" ||
+          result.messageId.trim() !== messageId.trim()
+        ) {
+          return;
+        }
+
+        if (
           !result.success ||
-          result.type !== "live_voice_audio_ready" ||
+          result.type !== "tts_audio_ready" ||
           !result.audio?.data
         ) {
           throw new Error(
@@ -720,55 +1650,33 @@ function App() {
         }
 
         const mimeType =
-          result.audio.mimeType || "audio/pcm;rate=24000";
+          result.audio.mimeType || "audio/wav";
 
-        if (!mimeType.toLowerCase().startsWith("audio/pcm")) {
+        if (!mimeType.toLowerCase().startsWith("audio/wav")) {
           throw new Error(
             "صيغة الصوت المستلمة غير مدعومة للتشغيل الآمن."
           );
         }
 
         const binary = window.atob(result.audio.data);
-        const byteLength = binary.length;
+        const bytes = new Uint8Array(binary.length);
 
-        if (byteLength < 2 || byteLength % 2 !== 0) {
-          throw new Error("بيانات PCM الصوتية غير صالحة.");
+        for (let index = 0; index < binary.length; index += 1) {
+          bytes[index] = binary.charCodeAt(index);
         }
 
-        const pcm = new Int16Array(byteLength / 2);
-
-        for (let index = 0; index < pcm.length; index += 1) {
-          const low = binary.charCodeAt(index * 2);
-          const high = binary.charCodeAt(index * 2 + 1);
-          pcm[index] = (high << 8) | low;
-        }
-
-        const audioContext =
-          voiceAudioContextRef.current ||
-          new AudioContext();
-
-        voiceAudioContextRef.current = audioContext;
-
-        if (audioContext.state === "suspended") {
-          await audioContext.resume();
-        }
+        const audioContext = await ensureVoiceAudioContext();
 
         if (requestId !== voiceRequestRef.current) {
           return;
         }
 
-        const sampleRate = 24000;
-
-        const audioBuffer = audioContext.createBuffer(
-          1,
-          pcm.length,
-          sampleRate
+        const audioBuffer = await audioContext.decodeAudioData(
+          bytes.buffer.slice(0)
         );
 
-        const channel = audioBuffer.getChannelData(0);
-
-        for (let index = 0; index < pcm.length; index += 1) {
-          channel[index] = pcm[index] / 32768;
+        if (requestId !== voiceRequestRef.current) {
+          return;
         }
 
         const source = audioContext.createBufferSource();
@@ -778,107 +1686,112 @@ function App() {
         source.onended = () => {
           if (voiceSourceRef.current === source) {
             voiceSourceRef.current = null;
-            setVoiceSpeaking(false);
+            setVoiceSpeakingMessageId(null);
           }
         };
 
         voiceSourceRef.current = source;
-        setVoiceSpeaking(true);
+        setVoiceSpeakingMessageId(messageId);
         source.start(0);
       } catch (voiceError) {
         if (requestId !== voiceRequestRef.current) {
           return;
         }
 
-        setVoiceSpeaking(false);
-
-        setChatMessages((messages) => [
-          ...messages,
-          {
-            role: "assistant",
-            content:
-              "تعذر تشغيل الرد الصوتي، بينما يبقى الرد النصي متاحًا."
-          }
-        ]);
+        setVoiceSpeakingMessageId(null);
 
         console.warn(
-          "Live voice playback failed:",
+          "TTS voice playback failed:",
           voiceError instanceof Error
             ? voiceError.message
             : voiceError
         );
       }
     },
-    [stopVoicePlayback]
+    [ensureVoiceAudioContext, stopVoicePlayback]
   );
 
-  const handleVoiceInput = () => {
-    const speechWindow = window as typeof window & {
-      SpeechRecognition?: BrowserSpeechRecognitionConstructor;
-      webkitSpeechRecognition?: BrowserSpeechRecognitionConstructor;
-    };
+  const handleVoiceInput = async () => {
+    if (voiceListening) {
+      try {
+        const recording = await AudioRecorder.stopRecording();
 
-    const Recognition =
-      speechWindow.SpeechRecognition ||
-      speechWindow.webkitSpeechRecognition;
+        setVoiceListening(false);
 
-    if (!Recognition) {
-      setChatMessages((messages) => [
-        ...messages,
-        {
-          role: "assistant",
-          content:
-            "الإدخال الصوتي غير مدعوم في هذا المتصفح. يمكنك استخدام الكتابة حالياً."
+        if (
+          !recording ||
+          recording.success !== true ||
+          recording.type !== "audio_recording_ready" ||
+          typeof recording.base64 !== "string" ||
+          !recording.base64
+        ) {
+          throw new Error("لم يتم استلام تسجيل صوتي صالح.");
         }
-      ]);
+
+        const transcription = await transcribeVoice(
+          {
+            base64: recording.base64,
+            mimeType: recording.mimeType || "audio/mp4",
+          },
+          {
+            language: "ar",
+            source: "native_microphone",
+          },
+        );
+
+        if (
+          transcription.success !== true ||
+          typeof transcription.transcript !== "string" ||
+          !transcription.transcript.trim()
+        ) {
+          throw new Error(
+            transcription.message || "تعذر تحويل التسجيل الصوتي إلى نص.",
+          );
+        }
+
+        const result = transcription.transcript.trim();
+
+        setChatInput((current) =>
+          current ? `${current} ${result}` : result,
+        );
+      } catch (error) {
+        setVoiceListening(false);
+
+        const message =
+          error instanceof Error
+            ? error.message
+            : "تعذر معالجة الإدخال الصوتي.";
+
+        setChatMessages((messages) => [
+          ...messages,
+          createChatMessage(
+            "assistant",
+            `تعذر معالجة الإدخال الصوتي: ${message}`,
+          ),
+        ]);
+      }
+
       return;
     }
 
-    const recognition = new Recognition();
-
-    recognition.lang = "ar-SA";
-    recognition.interimResults = false;
-    recognition.continuous = false;
-
-    recognition.onstart = () => {
-      setVoiceListening(true);
-    };
-
-    recognition.onresult = (event) => {
-      const result = event.results[0]?.[0]?.transcript?.trim();
-
-      if (result) {
-        setChatInput((current) =>
-          current ? `${current} ${result}` : result
-        );
-      }
-    };
-
-    recognition.onerror = (event) => {
-      setVoiceListening(false);
-
-      const reason = event.error || "unknown";
-
-      if (reason !== "aborted") {
-        setChatMessages((messages) => [
-          ...messages,
-          {
-            role: "assistant",
-            content:
-              `تعذر التقاط الإدخال الصوتي. رمز الخطأ: ${reason}.`
-          }
-        ]);
-      }
-    };
-
-    recognition.onend = () => {
-      setVoiceListening(false);
-    };
-
     try {
-      recognition.start();
-    } catch {
+      await AudioRecorder.startRecording();
+      setVoiceListening(true);
+    } catch (error) {
       setVoiceListening(false);
+
+      const message =
+        error instanceof Error
+          ? error.message
+          : "تعذر بدء التسجيل. يرجى السماح باستخدام الميكروفون.";
+
+      setChatMessages((messages) => [
+        ...messages,
+        createChatMessage(
+          "assistant",
+          `تعذر بدء التسجيل الصوتي: ${message}`,
+        ),
+      ]);
     }
   };
 
@@ -886,10 +1799,28 @@ function App() {
     hubs.find((hub) => hub.id === activeWorkspace) ?? hubs[0];
 
   const renderHubIcon = (icon: string) => {
+    if (icon === "overview") {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-9.5Z" />
+          <path d="M9 21v-6h6v6" />
+        </svg>
+      );
+    }
+
     if (icon === "chat") {
       return (
         <svg viewBox="0 0 24 24" aria-hidden="true">
           <path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5H8l-4 2v-4.3A7.4 7.4 0 0 1 4.5 7.5 7.5 7.5 0 0 1 12 4h.5A7.5 7.5 0 0 1 20 11.5Z" />
+        </svg>
+      );
+    }
+
+    if (icon === "abu-basha-spark") {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 2l1.9 6.1L20 10l-6.1 1.9L12 18l-1.9-6.1L4 10l6.1-1.9L12 2z" />
+          <circle cx="18.5" cy="5.5" r="1.5" fill="currentColor" stroke="none" />
         </svg>
       );
     }
@@ -921,6 +1852,58 @@ function App() {
       );
     }
 
+    if (icon === "plans") {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 4h12v16H6Z" />
+          <path d="M9 8h6M9 12h6M9 16h4" />
+        </svg>
+      );
+    }
+
+    if (icon === "approvals") {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="12" cy="12" r="9" />
+          <path d="m7 12 3 3 7-7" />
+        </svg>
+      );
+    }
+
+    if (icon === "execution") {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 5v14l11-7L7 5Z" />
+        </svg>
+      );
+    }
+
+    if (icon === "audit") {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="6.5" />
+          <path d="m16 16 4 4M8.5 11h5M11 8.5v5" />
+        </svg>
+      );
+    }
+
+    if (icon === "revenue") {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 3v18M16 7.5c0-1.7-1.7-3-4-3s-4 1.3-4 3 1.7 3 4 3 4 1.3 4 3-1.7 3-4 3-4-1.3-4-3" />
+        </svg>
+      );
+    }
+
+    if (icon === "settings") {
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z" />
+          <path d="m19 13 2-1-2-1-.5-2 1-2-2-1-1.5 1-2-.8L13 4h-2l-.5 2.2-2 .8L7 6 5 7l1 2-.5 2-2 1 2 1 .5 2-1 2 2 1 1.5-1 2 .8L11 20h2l.5-2.2 2-.8 1.5 1 2-1-1-2 .5-2Z" />
+        </svg>
+      );
+    }
+
     return (
       <svg viewBox="0 0 24 24" aria-hidden="true">
         <path d="M12 3 20 6v5c0 5-3.2 8.2-8 10-4.8-1.8-8-5-8-10V6l8-3Z" />
@@ -948,7 +1931,7 @@ function App() {
       <header className="topbar modern-topbar">
         <div className="topbar-copy">
           <div className="brand">
-            <span className="brand-mark modern-brand-mark" aria-hidden="true">✦</span>
+            <span className="brand-mark modern-brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" className="ui-icon ui-icon-brand" focusable="false"><path d="M12 2l1.9 6.1L20 10l-6.1 1.9L12 18l-1.9-6.1L4 10l6.1-1.9L12 2z" fill="currentColor"/><circle cx="18.5" cy="5.5" r="1.5" fill="currentColor"/></svg></span>
             <span>أبو بشة</span>
           </div>
         </div>
@@ -972,7 +1955,6 @@ function App() {
               type="button"
               onClick={() => {
                 setActiveWorkspace(hub.id);
-                setActive(hub.id === "chat" ? "chat" : "overview");
               }}
               aria-current={activeHub.id === hub.id ? "page" : undefined}
             >
@@ -1027,137 +2009,731 @@ function App() {
           </article>
         </section>
 
+        <section
+          aria-label="Development Pipeline"
+          className="workspace-card"
+        >
+          <div className="workspace-card-header">
+            <div>
+              <h2>Development Pipeline</h2>
+              <p>Build, Test, Debug, Release — عبر بوابة الموافقة الآمنة.</p>
+            </div>
+            <button
+              type="button"
+              className="workspace-tool-add"
+              onClick={refreshDevelopmentPipelineStatus}
+              disabled={pipelineStatusLoading}
+            >
+              {pipelineStatusLoading ? "جارٍ التحديث..." : "تحديث"}
+            </button>
+          </div>
+          <div className="settings-grid">
+            <div className="settings-card">
+              <strong>الحالة</strong>
+              <span>
+                {pipelineStatusLoading
+                  ? "جارٍ التحقق..."
+                  : pipelineStatus?.failClosed === true
+                    ? "Fail-Closed"
+                    : "غير متاح"}
+              </span>
+            </div>
+            <div className="settings-card">
+              <strong>الموافقة</strong>
+              <span>
+                {pipelineStatus?.requiresApproval === true
+                  ? "مطلوبة"
+                  : "غير متاحة"}
+              </span>
+            </div>
+            <div className="settings-card">
+              <strong>التنفيذ الخارجي</strong>
+              <span>
+                {pipelineStatus?.externalExecution === true
+                  ? "مغلق حسب السياسة"
+                  : "غير مفعّل"}
+              </span>
+            </div>
+          </div>
+        </section>
+
         {activeWorkspace === "coding" ? (
+          <CodingWorkspace
+            projectName={projectWorkspaceName}
+            projectPlatform={projectWorkspacePlatform}
+            projectSaving={projectWorkspaceSaving}
+            projectLoading={projectWorkspaceLoading}
+            projectError={projectWorkspaceError}
+            projectWorkspaces={projectWorkspaces}
+            codingTask={codingTask}
+            codingLoading={codingLoading}
+            codingApproval={codingApproval}
+            codingExecution={codingExecution}
+            codingExecutionLoading={codingExecutionLoading}
+            onProjectNameChange={setProjectWorkspaceName}
+            onProjectPlatformChange={setProjectWorkspacePlatform}
+            onCreateProject={handleCreateProjectWorkspace}
+            onTaskChange={setCodingTask}
+            onCreateApproval={handleCreateCodingApproval}
+            onExecuteApproval={handleExecuteCodingApproval}
+            onOpenTools={() => openToolHub("coding")}
+          />
+        ) : activeWorkspace === "editing" ? (
+          <EditingWorkspace
+            projectName={projectWorkspaceName}
+            projectPlatform={projectWorkspacePlatform}
+            projectSaving={projectWorkspaceSaving}
+            projectLoading={projectWorkspaceLoading}
+            projectError={projectWorkspaceError}
+            projectWorkspaces={projectWorkspaces}
+            onProjectNameChange={setProjectWorkspaceName}
+            onProjectPlatformChange={setProjectWorkspacePlatform}
+            onCreateProject={handleCreateProjectWorkspace}
+            onOpenTools={() => openToolHub("editing")}
+          />
+        ) : activeWorkspace === "studio" ? (
+          <StudioWorkspace
+            projectName={projectWorkspaceName}
+            projectPlatform={projectWorkspacePlatform}
+            projectSaving={projectWorkspaceSaving}
+            projectLoading={projectWorkspaceLoading}
+            projectError={projectWorkspaceError}
+            projectWorkspaces={projectWorkspaces}
+            onProjectNameChange={setProjectWorkspaceName}
+            onProjectPlatformChange={setProjectWorkspacePlatform}
+            onCreateProject={handleCreateProjectWorkspace}
+            onOpenTools={() => openToolHub("studio")}
+          />
+         ) : activeWorkspace === "control" ? (
+          <ControlWorkspace
+            planStatus={planStatus}
+            executionStatus={executionStatus}
+            openApprovals={0}
+            failedApprovals={0}
+            onRefresh={() => {
+              void loadApprovals();
+            }}
+            onOpenTools={() => openToolHub("control")}
+          />
+        ) : activeWorkspace === "overview" ? (
           <section className="workspace">
             <div className="workspace-header">
               <div>
-                <span className="workspace-kicker">CODING WORKSPACE</span>
-                <h2>البرمجة</h2>
-                <p>تنفيذ مهام التطوير عبر عقدة الموافقة المعتمدة.</p>
+                <div className="workspace-title-group">
+                  <span className="workspace-kicker">OVERVIEW WORKSPACE</span>
+                  <h2>الرئيسية</h2>
+                </div>
+                <button
+                  type="button"
+                  className="workspace-tool-add"
+                  onClick={() => openToolHub("overview")}
+                  aria-label="إدارة أدوات الرئيسية"
+                  title="إدارة أدوات الرئيسية"
+                >+</button>
+                <p>نقطة البداية المركزية لمتابعة حالة الوكيل ومسارات العمل.</p>
+              </div>
+            </div>
+            <div className="workspace-body">
+              <div className="grid">
+                <article className="card">
+                  <span className="card-label">حالة الوكيل</span>
+                  <strong>جاهز</strong>
+                  <small>Runtime operational</small>
+                </article>
+                <article className="card">
+                  <span className="card-label">الخطط المسجلة</span>
+                  <strong>{planStatus?.plans ?? "—"}</strong>
+                  <small>{statusLabel(planStatus?.status)}</small>
+                </article>
+                <article className="card">
+                  <span className="card-label">التنفيذ</span>
+                  <strong>{executionStatus?.executed ?? "—"}</strong>
+                  <small>عمليات مسجلة</small>
+                </article>
+                <article className="card">
+                  <span className="card-label">التنفيذ الذاتي</span>
+                  <strong>معطل</strong>
+                  <small>Autonomous execution disabled</small>
+                </article>
+              </div>
+            </div>
+          </section>
+        ) : activeWorkspace === "settings" ? (
+          <section className="workspace">
+            <div className="workspace-header">
+              <div>
+                <div className="workspace-title-group">
+                  <span className="workspace-kicker">SETTINGS WORKSPACE</span>
+                  <h2>الإعدادات المركزية</h2>
+                </div>
+                <p>
+                  إدارة هوية الوكيل، المظهر، السلوك، الأدوات، الذكاء الاصطناعي،
+                  الأمان، الإشعارات، البيانات والتشخيص من نقطة واحدة.
+                </p>
+              </div>
+
+              <div className="workspace-header-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void loadSettings()}
+                  disabled={settingsLoading || settingsSaving}
+                >
+                  {settingsLoading ? "جارٍ التحميل..." : "تحديث"}
+                </button>
+                <button
+                  type="button"
+                  className="workspace-tool-add"
+                  onClick={() => openToolHub("settings")}
+                  aria-label="إدارة أدوات الإعدادات"
+                  title="إدارة أدوات الإعدادات"
+                >
+                  +
+                </button>
               </div>
             </div>
 
-            <div className="workspace-body">
-              <div className="card">
-                <span className="card-label">مهمة التطوير</span>
+            <div className="workspace-body settings-management">
+              {settingsLoading && !settings ? (
+                <div className="card settings-state-card">
+                  <strong>جارٍ تحميل الإعدادات...</strong>
+                  <small>يتم جلب الحالة الحالية من Runtime.</small>
+                </div>
+              ) : settingsError ? (
+                <div className="card settings-state-card settings-error-card">
+                  <strong>تعذر تحميل الإعدادات</strong>
+                  <small>{settingsError}</small>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => void loadSettings()}
+                  >
+                    إعادة المحاولة
+                  </button>
+                </div>
+              ) : settings ? (
+                <>
+                  {settingsMessage ? (
+                    <div className="settings-feedback settings-success">
+                      {settingsMessage}
+                    </div>
+                  ) : null}
 
-                <textarea
-                  value={codingTask}
-                  onChange={(event) => setCodingTask(event.target.value)}
-                  placeholder="اكتب المهمة البرمجية التي تريد تنفيذها..."
-                  rows={6}
-                  disabled={codingLoading}
-                />
+                  {settingsError ? (
+                    <div className="settings-feedback settings-error">
+                      {settingsError}
+                    </div>
+                  ) : null}
 
-                <button
-                  type="button"
-                  onClick={handleCreateCodingApproval}
-                  disabled={codingLoading || !codingTask.trim()}
-                >
-                  {codingLoading
-                    ? "جاري إنشاء طلب الموافقة..."
-                    : "طلب موافقة التنفيذ"}
-                </button>
-              </div>
+                  <div className="grid settings-grid">
+                    <article className="card settings-card settings-section-card">
+                      <span className="card-label">الحساب والهوية</span>
+                      <strong>هوية أبو بشة</strong>
+                      <small>
+                        البيانات المحلية القابلة للتعديل فقط؛ وضع الهوية الأساسي
+                        يظل محكومًا بالـRuntime.
+                      </small>
+                      <label className="settings-field">
+                        <span>الاسم الظاهر</span>
+                        <input
+                          value={settings.account?.displayName || ""}
+                          onChange={(event) =>
+                            patchSettings("account", {
+                              displayName: event.target.value
+                            })
+                          }
+                          disabled={settingsSaving}
+                        />
+                      </label>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() =>
+                          void saveSettings({ account: settings.account })
+                        }
+                        disabled={settingsSaving}
+                      >
+                        حفظ الهوية
+                      </button>
+                    </article>
 
-              {codingApproval ? (
-                <div className="card">
-                  <span className="card-label">الموافقة</span>
-                  <strong>{codingApproval.status || "pending_approval"}</strong>
-                  <small>
-                    Approval ID: {codingApproval.id || "—"}
-                  </small>
-                  <small>
-                    التنفيذ لا يتم من الواجهة مباشرة، ولا يصبح متاحًا إلا
-                    عبر مسار الموافقة المعتمد.
-                  </small>
+                    <article className="card settings-card settings-section-card">
+                      <span className="card-label">المظهر</span>
+                      <strong>واجهة المنتج</strong>
+                      <small>تفضيلات العرض المحلية المدعومة.</small>
+                      <label className="settings-field">
+                        <span>السمة</span>
+                        <select
+                          value={settings.appearance?.theme || "dark"}
+                          onChange={(event) =>
+                            patchSettings("appearance", {
+                              theme: event.target.value
+                            })
+                          }
+                        >
+                          <option value="dark">داكن</option>
+                          <option value="light">فاتح</option>
+                          <option value="system">النظام</option>
+                        </select>
+                      </label>
+                      <label className="settings-field">
+                        <span>كثافة الواجهة</span>
+                        <select
+                          value={settings.appearance?.density || "comfortable"}
+                          onChange={(event) =>
+                            patchSettings("appearance", {
+                              density: event.target.value
+                            })
+                          }
+                        >
+                          <option value="comfortable">مريحة</option>
+                          <option value="compact">مضغوطة</option>
+                        </select>
+                      </label>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={settings.appearance?.reduceMotion ?? false}
+                          onChange={(event) =>
+                            patchSettings("appearance", {
+                              reduceMotion: event.target.checked
+                            })
+                          }
+                          disabled={settingsSaving}
+                        />
+                        <span>تقليل الحركة والمؤثرات</span>
+                      </label>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() =>
+                          void saveSettings({ appearance: settings.appearance })
+                        }
+                        disabled={settingsSaving}
+                      >
+                        حفظ المظهر
+                      </button>
+                    </article>
 
-                  {codingApproval.status === "approved" ? (
+                    <article className="card settings-card settings-section-card">
+                      <span className="card-label">تفضيلات الوكيل</span>
+                      <strong>السلوك والتفاعل</strong>
+                      <small>تفضيلات الوكيل التي لا تمنح صلاحيات تنفيذ جديدة.</small>
+                      <label className="settings-field">
+                        <span>أسلوب الرد</span>
+                        <select
+                          value={settings.agent?.responseStyle || "balanced"}
+                          onChange={(event) =>
+                            patchSettings("agent", {
+                              responseStyle: event.target.value
+                            })
+                          }
+                        >
+                          <option value="balanced">متوازن</option>
+                          <option value="detailed">مفصل</option>
+                          <option value="concise">مختصر</option>
+                        </select>
+                      </label>
+                      <label className="settings-field">
+                        <span>الموافقات</span>
+                        <select
+                          value={settings.agent?.confirmations || "required"}
+                          onChange={(event) =>
+                            patchSettings("agent", {
+                              confirmations: event.target.value
+                            })
+                          }
+                        >
+                          <option value="required">موافقة مطلوبة</option>
+                        </select>
+                      </label>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={settings.agent?.proactiveSuggestions ?? true}
+                          onChange={(event) =>
+                            patchSettings("agent", {
+                              proactiveSuggestions: event.target.checked
+                            })
+                          }
+                          disabled={settingsSaving}
+                        />
+                        <span>اقتراحات استباقية</span>
+                      </label>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={settings.notifications?.enabled ?? true}
+                          onChange={(event) =>
+                            patchSettings("notifications", {
+                              enabled: event.target.checked
+                            })
+                          }
+                          disabled={settingsSaving}
+                        />
+                        <span>الإشعارات مفعلة</span>
+                      </label>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={settings.notifications?.approvalAlerts ?? true}
+                          onChange={(event) =>
+                            patchSettings("notifications", {
+                              approvalAlerts: event.target.checked
+                            })
+                          }
+                        />
+                        <span>تنبيهات الموافقات</span>
+                      </label>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={settings.notifications?.executionAlerts ?? true}
+                          onChange={(event) =>
+                            patchSettings("notifications", {
+                              executionAlerts: event.target.checked
+                            })
+                          }
+                        />
+                        <span>تنبيهات التنفيذ</span>
+                      </label>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() =>
+                          void saveSettings({
+                            notifications: settings.notifications
+                          })
+                        }
+                        disabled={settingsSaving}
+                      >
+                        حفظ الإشعارات
+                      </button>
+                    </article>
+
+                    <article className="card settings-card settings-section-card">
+                      <span className="card-label">البيانات والجلسات</span>
+                      <strong>Data & Sessions</strong>
+                      <small>
+                        إعدادات الاحتفاظ بالبيانات؛ لا يوجد حذف تلقائي من الواجهة
+                        دون مسار Runtime مخصص.
+                      </small>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={settings.data?.retainSessionHistory ?? true}
+                          onChange={(event) =>
+                            patchSettings("data", {
+                              retainSessionHistory: event.target.checked
+                            })
+                          }
+                        />
+                        <span>الاحتفاظ بسجل الجلسات</span>
+                      </label>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={settings.data?.retainAuditHistory ?? true}
+                          onChange={(event) =>
+                            patchSettings("data", {
+                              retainAuditHistory: event.target.checked
+                            })
+                          }
+                        />
+                        <span>الاحتفاظ بسجل التدقيق</span>
+                      </label>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => void saveSettings({ data: settings.data })}
+                        disabled={settingsSaving}
+                      >
+                        حفظ البيانات
+                      </button>
+                    </article>
+
+                    <article className="card settings-card settings-section-card">
+                      <span className="card-label">الذكاء الاصطناعي</span>
+                      <strong>AI Provider</strong>
+                      <small>اختيارات النموذج المسموح بها من خدمة الإعدادات المركزية.</small>
+                      <label className="settings-field">
+                        <span>المزوّد</span>
+                        <select
+                          value={settings.ai?.provider || "gemini"}
+                          onChange={(event) =>
+                            patchSettings("ai", {
+                              provider: event.target.value
+                            })
+                          }
+                          disabled={settingsSaving}
+                        >
+                          <option value="gemini">Gemini</option>
+                        </select>
+                      </label>
+                      <label className="settings-field">
+                        <span>النموذج</span>
+                        <select
+                          value={settings.ai?.model || "gemini-3.8-flash"}
+                          onChange={(event) =>
+                            patchSettings("ai", {
+                              model: event.target.value
+                            })
+                          }
+                          disabled={settingsSaving}
+                        >
+                          <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
+                          <option value="gemini-3.7-flash">Gemini 3.7 Flash</option>
+                          <option value="gemini-3.6-flash">Gemini 3.6 Flash</option>
+                          <option value="gemini-3.5-flash">Gemini 3.5 Flash</option>
+                          <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash Lite</option>
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() => void saveSettings({ ai: settings.ai })}
+                        disabled={settingsSaving}
+                      >
+                        حفظ الذكاء الاصطناعي
+                      </button>
+                    </article>
+
+                    <article className="card settings-card settings-section-card">
+                      <span className="card-label">الأدوات والموصلات</span>
+                      <strong>Tools & Connectors</strong>
+                      <small>تفضيلات العرض والاستخدام المحلية؛ لا تمنح صلاحيات تنفيذ.</small>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={settings.tools?.enabled ?? true}
+                          onChange={(event) =>
+                            patchSettings("tools", {
+                              enabled: event.target.checked
+                            })
+                          }
+                          disabled={settingsSaving}
+                        />
+                        <span>الأدوات مفعلة</span>
+                      </label>
+                      <label className="settings-toggle">
+                        <input
+                          type="checkbox"
+                          checked={settings.connectors?.showUnavailable ?? true}
+                          onChange={(event) =>
+                            patchSettings("connectors", {
+                              showUnavailable: event.target.checked
+                            })
+                          }
+                          disabled={settingsSaving}
+                        />
+                        <span>إظهار الموصلات غير المتاحة</span>
+                      </label>
+                      <button
+                        type="button"
+                        className="primary-button"
+                        onClick={() =>
+                          void saveSettings({
+                            tools: settings.tools,
+                            connectors: settings.connectors
+                          })
+                        }
+                        disabled={settingsSaving}
+                      >
+                        حفظ الأدوات والموصلات
+                      </button>
+                    </article>
+
+                    <article className="card settings-card settings-section-card">
+                      <span className="card-label">Runtime & Security</span>
+                      <strong>حدود التشغيل</strong>
+                      <small>هذه القيم مراقبة فقط ولا يمكن لواجهة الإعدادات تغييرها.</small>
+                      <div className="settings-status-row">
+                        <span>Runtime</span>
+                        <strong>{executionStatus?.status || "غير متاح"}</strong>
+                      </div>
+                      <div className="settings-status-row">
+                        <span>Require Approval</span>
+                        <strong>مفعل</strong>
+                      </div>
+                      <div className="settings-status-row">
+                        <span>Fail Closed</span>
+                        <strong>مفعل</strong>
+                      </div>
+                      <div className="settings-status-row">
+                        <span>Autonomous Execution</span>
+                        <strong>معطل</strong>
+                      </div>
+                      <div className="settings-status-row">
+                        <span>External Execution</span>
+                        <strong>معطل</strong>
+                      </div>
+                    </article>
+
+                    <article className="card settings-card settings-section-card">
+                      <span className="card-label">الهوية والحساب</span>
+                      <strong>Account Identity</strong>
+                      <small>الهوية المحلية قابلة للعرض فقط؛ نمط الهوية لا يُعدل من Settings.</small>
+                      <div className="settings-status-row">
+                        <span>Identity Mode</span>
+                        <strong>{settings.account?.identityMode || "local"}</strong>
+                      </div>
+                      <div className="settings-status-row">
+                        <span>Display Name</span>
+                        <strong>{settings.account?.displayName || "غير محدد"}</strong>
+                      </div>
+                    </article>
+
+                    <article className="card settings-card settings-section-card">
+                      <span className="card-label">التشخيص والصيانة</span>
+                      <strong>Diagnostic Center</strong>
+                      <small>
+                        الوصول إلى مركز التشخيص الموجود مع بقاء التشغيل الآمن
+                        والـread-only boundaries كما هي.
+                      </small>
+                      <div className="settings-status-row">
+                        <span>حالة التشخيص</span>
+                        <strong>
+                          {statusLabel(diagnosticStatus?.mode)}
+                        </strong>
+                      </div>
+                      <div className="settings-status-row">
+                        <span>Fail-Closed</span>
+                        <strong>
+                          {diagnosticStatus?.failClosed ? "مفعل" : "—"}
+                        </strong>
+                      </div>
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        onClick={() => setActive("audit")}
+                      >
+                        فتح مركز التشخيص
+                      </button>
+                    </article>
+
+                    <article className="card settings-card settings-section-card">
+                      <span className="card-label">حول أبو بشة</span>
+                      <strong>الإصدار والحالة</strong>
+                      <small>معلومات المنتج والحالة الحالية للـRuntime.</small>
+                      <div className="settings-status-row">
+                        <span>Runtime</span>
+                        <strong>
+                          {statusLabel(executionStatus?.status)}
+                        </strong>
+                      </div>
+                      <div className="settings-status-row">
+                        <span>Execution</span>
+                        <strong>
+                          {executionStatus?.executed ?? 0}
+                        </strong>
+                      </div>
+                      <div className="settings-status-row">
+                        <span>Settings API</span>
+                        <strong>متصل</strong>
+                      </div>
+                    </article>
+                  </div>
+
+                  <div className="settings-save-bar">
+                    <span>
+                      {settingsSaving
+                        ? "جارٍ حفظ التغييرات..."
+                        : settingsDirty
+                          ? "لديك تغييرات غير محفوظة."
+                          : settingsSavedAt
+                            ? "تمت مزامنة الإعدادات مع Runtime."
+                            : "الإعدادات محكومة بالـAPI المركزي."}
+                    </span>
                     <button
                       type="button"
-                      onClick={handleExecuteCodingApproval}
-                      disabled={codingExecutionLoading}
+                      className="primary-button"
+                      onClick={() =>
+                        void saveSettings({
+                          account: settings.account,
+                          appearance: settings.appearance,
+                          agent: settings.agent,
+                          tools: settings.tools,
+                          connectors: settings.connectors,
+                          ai: settings.ai,
+                          notifications: settings.notifications,
+                          data: settings.data
+                        })
+                      }
+                      disabled={settingsSaving || !settingsDirty}
                     >
-                      {codingExecutionLoading
-                        ? "جاري تنفيذ المهمة المعتمدة..."
-                        : "تنفيذ المهمة المعتمدة"}
+                      {settingsSaving ? "جارٍ الحفظ..." : "حفظ كل التغييرات"}
                     </button>
-                  ) : null}
-
-                  {codingExecution ? (
-                    <small>
-                      حالة التنفيذ:{" "}
-                      {codingExecution.success ? "نجح" : "فشل"}
-                    </small>
-                  ) : null}
-                </div>
+                  </div>
+                </>
               ) : (
-                <div className="empty-state">
-                  <strong>لا توجد موافقة نشطة</strong>
-                  <span>
-                    اكتب مهمة ثم اطلب الموافقة. لن يتم تنفيذ أي أمر
-                    برمجي في هذه المرحلة.
-                  </span>
+                <div className="card settings-state-card">
+                  <strong>لا توجد إعدادات متاحة.</strong>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => void loadSettings()}
+                  >
+                    تحميل الإعدادات
+                  </button>
                 </div>
               )}
             </div>
           </section>
-        ) : activeWorkspace === "editing" ? (
-          <section className="workspace">
-            <div className="workspace-header">
-              <div>
-                <span className="workspace-kicker">EDITING WORKSPACE</span>
-                <h2>المونتاج</h2>
-                <p>مساحة مستقلة لأدوات الوسائط والمونتاج.</p>
-              </div>
-            </div>
-            <div className="workspace-body">
-              <div className="empty-state">
-                <strong>مساحة المونتاج جاهزة</strong>
-                <span>
-                  قدرات الوسائط ستظهر هنا عندما تكون مدعومة بعقد Capability
-                  واضح وقابل للتدقيق.
-                </span>
-              </div>
-            </div>
-          </section>
-        ) : activeWorkspace === "studio" ? (
-          <section className="workspace">
-            <div className="workspace-header">
-              <div>
-                <span className="workspace-kicker">STUDIO WORKSPACE</span>
-                <h2>الاستوديو</h2>
-                <p>مساحة موحدة للمحتوى والمشاريع والأصول.</p>
-              </div>
-            </div>
-            <div className="workspace-body">
-              <div className="empty-state">
-                <strong>الاستوديو جاهز</strong>
-                <span>
-                  سيتم عرض أدوات الاستوديو من خلال قدرات حقيقية قابلة للتدقيق.
-                </span>
-              </div>
-            </div>
-          </section>
-        ) : activeWorkspace === "control" ? (
-          <section className="workspace">
-            <div className="workspace-header">
-              <div>
-                <span className="workspace-kicker">CONTROL &amp; SECURITY</span>
-                <h2>التحكم والأمان</h2>
-                <p>المراقبة والموافقات والتدقيق والحالة التشغيلية.</p>
-              </div>
-            </div>
-            <div className="workspace-body">
-              <div className="empty-state">
-                <strong>مركز التحكم والأمان</strong>
-                <span>
-                  أدوات المراقبة والموافقات والتدقيق ستُنقل إلى هذه المساحة
-                  تدريجيًا مع الحفاظ على المسار الأمني الحالي.
-                </span>
-              </div>
-            </div>
-          </section>
+            ) : toolHubWorkspace ? (
+              <section className="workspace tool-hub-overlay">
+                <div className="workspace-header">
+                  <div>
+                    <span className="workspace-kicker">TOOL HUB</span>
+                    <h2>
+                      أدوات{" "}
+                      {hubs.find((hub) => hub.id === toolHubWorkspace)?.label || "القسم"}
+                    </h2>
+                    <p>
+                      إدارة الأدوات المرتبطة بالقسم. الربط التنفيذي الفعلي يحتاج
+                      Connector وCapability معتمدين.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={closeToolHub}
+                  >
+                    إغلاق
+                  </button>
+                </div>
+
+                <div className="workspace-body">
+                  <div className="grid tool-hub-grid">
+                    {(workspaceTools[toolHubWorkspace] || []).map((tool) => (
+                      <article className="card tool-card" key={tool.id}>
+                        <span className="card-label">
+                          {tool.kind === "app"
+                            ? "تطبيق"
+                            : tool.kind === "service"
+                              ? "خدمة"
+                              : "مورد"}
+                        </span>
+                        <strong>{tool.name}</strong>
+                        <small>
+                          {tool.status === "available"
+                            ? "مفعّل في هذا القسم"
+                            : "غير مفعّل — لا يوجد وصول تنفيذي تلقائي"}
+                        </small>
+                        <button
+                          type="button"
+                          className="secondary-button"
+                          onClick={() =>
+                            toggleWorkspaceTool(toolHubWorkspace, tool.id)
+                          }
+                        >
+                          {tool.status === "available" ? "تعطيل" : "تفعيل"}
+                        </button>
+                      </article>
+                    ))}
+                  </div>
+                </div>
+              </section>
+
         ) : monitorVisible ? (
           <section className="monitor-stack">
             <section className="workspace">
@@ -1665,7 +3241,7 @@ function App() {
             <div className="chat-header">
               <div className="chat-header-main">
                 <div className="chat-avatar" aria-hidden="true">
-                  ✦
+                  <svg viewBox="0 0 24 24" className="ui-icon ui-icon-spark" aria-hidden="true" focusable="false"><path d="M12 2l1.9 6.1L20 10l-6.1 1.9L12 18l-1.9-6.1L4 10l6.1-1.9L12 2z" fill="currentColor"/></svg>
                 </div>
 
                 <div className="chat-header-copy">
@@ -1691,7 +3267,7 @@ function App() {
                 {chatMessages.length === 0 ? (
                   <div className="chat-empty">
                     <div className="chat-empty-icon" aria-hidden="true">
-                      ✦
+                      <svg viewBox="0 0 24 24" className="ui-icon ui-icon-spark" aria-hidden="true" focusable="false"><path d="M12 2l1.9 6.1L20 10l-6.1 1.9L12 18l-1.9-6.1L4 10l6.1-1.9L12 2z" fill="currentColor"/></svg>
                     </div>
 
                     <div className="chat-empty-badge">
@@ -1714,11 +3290,11 @@ function App() {
                   <div className="chat-message-list">
                     {chatMessages.map((message, index) => (
                       <div
-                        key={`${message.role}-${index}`}
+                        key={message.id}
                         className={`chat-message ${message.role}`}
                       >
                         <div className="chat-message-avatar" aria-hidden="true">
-                          {message.role === "user" ? "أ" : "✦"}
+                          {message.role === "user" ? "أ" : <svg viewBox="0 0 24 24" className="ui-icon" aria-hidden="true" focusable="false"><path d="M12 2l1.9 6.1L20 10l-6.1 1.9L12 18l-1.9-6.1L4 10l6.1-1.9L12 2z" fill="currentColor"/></svg>}
                         </div>
 
                         <div className="chat-message-body">
@@ -1733,34 +3309,201 @@ function App() {
                           <div className="chat-message-content">
                             {message.content}
                           </div>
-                          {message.role === "assistant" ? (
-                            <div className="chat-message-actions">
-                              <button
-                                className="chat-message-voice-button"
-                                type="button"
-                                onClick={() => {
-                                  if (voiceSpeaking) {
-                                    stopVoicePlayback();
-                                    return;
-                                  }
+                            <div className="chat-message-assistant-actions">
+                              <div className="chat-message-actions">
+                                {message.role === "assistant" ? (
+                                  <button
+                                    className="chat-message-voice-button"
+                                    type="button"
+                                    onClick={() => {
+                                      if (voiceSpeakingMessageId === message.id) {
+                                        stopVoicePlayback();
+                                        return;
+                                      }
 
-                                  void playVoiceText(message.content);
-                                }}
-                                aria-label={
-                                  voiceSpeaking
-                                    ? "إيقاف الرد الصوتي"
-                                    : "تشغيل الرد صوتيًا"
-                                }
-                                title={
-                                  voiceSpeaking
-                                    ? "إيقاف الصوت"
-                                    : "تشغيل الصوت"
-                                }
-                              >
-                                {voiceSpeaking ? "■" : "🔊"}
-                              </button>
+                                      void playVoiceText(
+                                        message.content,
+                                        message.id
+                                      );
+                                    }}
+                                    aria-label={
+                                      voiceSpeakingMessageId === message.id
+                                        ? "إيقاف الرد الصوتي"
+                                        : "تشغيل الرد صوتيًا"
+                                    }
+                                    title={
+                                      voiceSpeakingMessageId === message.id
+                                        ? "إيقاف الصوت"
+                                        : "تشغيل الصوت"
+                                    }
+                                  >
+                                    {voiceSpeakingMessageId === message.id ? (
+                                      <svg
+                                        viewBox="0 0 24 24"
+                                        className="ui-icon"
+                                        aria-hidden="true"
+                                        focusable="false"
+                                      >
+                                        <rect
+                                          x="7"
+                                          y="7"
+                                          width="10"
+                                          height="10"
+                                          rx="2"
+                                          fill="currentColor"
+                                        />
+                                      </svg>
+                                    ) : (
+                                      <svg
+                                        viewBox="0 0 24 24"
+                                        className="ui-icon"
+                                        aria-hidden="true"
+                                        focusable="false"
+                                      >
+                                        <path
+                                          d="M4 10v4h4l5 4V6L8 10H4z"
+                                          fill="currentColor"
+                                        />
+                                        <path
+                                          d="M16 9.2a4 4 0 010 5.6M18.5 6.7a7.5 7.5 0 010 10.6"
+                                          fill="none"
+                                          stroke="currentColor"
+                                          strokeWidth="1.8"
+                                          strokeLinecap="round"
+                                        />
+                                      </svg>
+                                    )}
+                                  </button>
+                                ) : null}
+
+                                <button
+                                  className="chat-message-action-button"
+                                  type="button"
+                                  onClick={() => void handleCopyMessage(message)}
+                                  aria-label="نسخ الرسالة"
+                                  title="نسخ"
+                                  disabled={!message.content.trim()}
+                                >
+                                  نسخ
+                                </button>
+
+                                <button
+                                  className="chat-message-action-button"
+                                  type="button"
+                                  onClick={() => void handleShareMessage(message)}
+                                  aria-label="مشاركة الرسالة"
+                                  title="مشاركة"
+                                  disabled={!message.content.trim()}
+                                >
+                                  مشاركة
+                                </button>
+
+                                {message.role === "user" ? (
+                                  <button
+                                    className="chat-message-action-button"
+                                    type="button"
+                                    onClick={() => handleEditMessage(message)}
+                                    aria-label="تعديل الرسالة"
+                                    title="تعديل"
+                                    disabled={!message.content.trim() || chatLoading}
+                                  >
+                                    تعديل
+                                  </button>
+                                ) : null}
+
+                                {message.role === "user" ? (
+                                  <button
+                                    className="chat-message-action-button"
+                                    type="button"
+                                    onClick={() => handleRetryMessage(message)}
+                                    aria-label="إعادة إرسال الرسالة"
+                                    title="إعادة المحاولة"
+                                    disabled={!message.content.trim() || chatLoading}
+                                  >
+                                    إعادة المحاولة
+                                  </button>
+                                ) : null}
+
+                                {message.role === "assistant" ? (
+                                  <button
+                                    className="chat-message-action-button"
+                                    type="button"
+                                    onClick={() => handleRegenerateMessage(message)}
+                                    aria-label="توليد الرد مرة أخرى"
+                                    title="توليد مرة أخرى"
+                                    disabled={!message.sourcePrompt?.trim() || chatLoading}
+                                  >
+                                    توليد مرة أخرى
+                                  </button>
+                                ) : null}
+
+                                <button
+                                  className="chat-message-action-button chat-message-action-button-danger"
+                                  type="button"
+                                  onClick={() => handleDeleteMessage(message.id)}
+                                  aria-label="حذف الرسالة"
+                                  title="حذف"
+                                >
+                                  حذف
+                                </button>
+                              </div>
+
+                              {message.action ? (
+                                <div
+                                  className="chat-message-action-controls"
+                                  data-message-id={message.id}
+                                  data-approval-id={message.action.approvalId}
+                                >
+                                  <div className="chat-message-action-state">
+                                    {message.action.status === "pending_approval"
+                                      ? "بانتظار موافقتك"
+                                      : message.action.status === "approved"
+                                        ? "تمت الموافقة"
+                                        : message.action.status === "rejected"
+                                          ? "تم الرفض"
+                                          : message.action.status === "executed"
+                                            ? "تم التنفيذ"
+                                            : "فشل التنفيذ"}
+                                  </div>
+
+                                  {message.action.status === "pending_approval" &&
+                                  message.action.approvalRequired === true &&
+                                  message.action.executionAllowed === false ? (
+                                    <div className="chat-message-action-buttons">
+                                      <button
+                                        className="chat-message-action-approve"
+                                        type="button"
+                                        onClick={() =>
+                                          void handleChatApprove(
+                                            message.id,
+                                            message.action!
+                                          )
+                                        }
+                                        disabled={chatLoading}
+                                      >
+                                        {chatLoading
+                                          ? "جارٍ التنفيذ..."
+                                          : "موافقة وتنفيذ"}
+                                      </button>
+
+                                      <button
+                                        className="chat-message-action-reject"
+                                        type="button"
+                                        onClick={() =>
+                                          void handleChatReject(
+                                            message.id,
+                                            message.action!
+                                          )
+                                        }
+                                        disabled={chatLoading}
+                                      >
+                                        رفض
+                                      </button>
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ) : null}
                             </div>
-                          ) : null}
                         </div>
                       </div>
                     ))}
@@ -1770,7 +3513,7 @@ function App() {
                 {chatLoading ? (
                   <div className="chat-loading" aria-label="جارٍ المعالجة">
                     <div className="chat-message-avatar" aria-hidden="true">
-                      ✦
+                      <svg viewBox="0 0 24 24" className="ui-icon ui-icon-spark" aria-hidden="true" focusable="false"><path d="M12 2l1.9 6.1L20 10l-6.1 1.9L12 18l-1.9-6.1L4 10l6.1-1.9L12 2z" fill="currentColor"/></svg>
                     </div>
 
                     <div className="chat-loading-bubble">
@@ -1782,52 +3525,6 @@ function App() {
                   </div>
                 ) : null}
               </div>
-
-              {chatApproval ? (
-                <section className="chat-approval-card" aria-live="polite">
-                  <div className="chat-card-icon" aria-hidden="true">
-                    🛡
-                  </div>
-
-                  <div className="chat-card-content">
-                    <div className="chat-card-eyebrow">
-                      يتطلب موافقتك
-                    </div>
-
-                    <strong>تم تجهيز عملية للتنفيذ</strong>
-
-                    <p>
-                      لن يتم تنفيذ هذه العملية قبل موافقتك الصريحة.
-                    </p>
-
-                    <div className="chat-approval-prompt">
-                      {chatApprovalPrompt}
-                    </div>
-
-                    <div className="chat-approval-actions">
-                      <button
-                        className="refresh-button chat-primary-action"
-                        type="button"
-                        onClick={() => void handleChatApprove()}
-                        disabled={chatLoading}
-                      >
-                        {chatLoading
-                          ? "جارٍ التنفيذ..."
-                          : "موافقة وتنفيذ"}
-                      </button>
-
-                      <button
-                        className="refresh-button approval-reject"
-                        type="button"
-                        onClick={handleChatReject}
-                        disabled={chatLoading}
-                      >
-                        رفض
-                      </button>
-                    </div>
-                  </div>
-                </section>
-              ) : null}
 
               {chatExecution ? (
                 <section className="chat-execution-result" aria-live="polite">
@@ -1891,95 +3588,35 @@ function App() {
                           role="menu"
                           aria-label="أدوات الإضافة"
                         >
-                          <label
+                          <button
                             className="chat-tools-menu-button"
-                            title="إضافة صورة"
-                            aria-label="إضافة صورة"
+                            type="button"
+                            disabled
+                            aria-label="رفع الصور غير متاح حاليًا"
+                            title="رفع الصور غير متاح حاليًا: لا يوجد عقد رفع فعلي معتمد"
                           >
-                            <input
-                              type="file"
-                              accept="image/*"
-                              hidden
-                              disabled={chatLoading}
-                              onChange={(event) => {
-                                const file = event.target.files?.[0];
-                                if (file) {
-                                  setChatInput((current) =>
-                                    current
-                                      ? `${current}\n[صورة: ${file.name}]`
-                                      : `[صورة: ${file.name}]`
-                                  );
-                                }
-                                event.currentTarget.value = "";
-                                setChatToolsOpen(false);
-                              }}
-                            />
-                            <svg viewBox="0 0 24 24" aria-hidden="true">
-                              <path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v13a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 18.5z" />
-                              <circle cx="8.5" cy="8.5" r="1.5" />
-                              <path d="m5.5 18 4.5-4.5 3-3 2-2 3.5 3.5" />
-                            </svg>
                             <span>صورة</span>
-                          </label>
+                          </button>
 
-                          <label
+                          <button
                             className="chat-tools-menu-button"
-                            title="إضافة فيديو"
-                            aria-label="إضافة فيديو"
+                            type="button"
+                            disabled
+                            aria-label="رفع الفيديو غير متاح حاليًا"
+                            title="رفع الفيديو غير متاح حاليًا: لا يوجد عقد رفع فعلي معتمد"
                           >
-                            <input
-                              type="file"
-                              accept="video/*"
-                              hidden
-                              disabled={chatLoading}
-                              onChange={(event) => {
-                                const file = event.target.files?.[0];
-                                if (file) {
-                                  setChatInput((current) =>
-                                    current
-                                      ? `${current}\n[فيديو: ${file.name}]`
-                                      : `[فيديو: ${file.name}]`
-                                  );
-                                }
-                                event.currentTarget.value = "";
-                                setChatToolsOpen(false);
-                              }}
-                            />
-                            <svg viewBox="0 0 24 24" aria-hidden="true">
-                              <rect x="3" y="5" width="13" height="14" rx="2" />
-                              <path d="m16 10 5-3v10l-5-3z" />
-                            </svg>
                             <span>فيديو</span>
-                          </label>
+                          </button>
 
-                          <label
+                          <button
                             className="chat-tools-menu-button"
-                            title="إضافة ملف"
-                            aria-label="إضافة ملف"
+                            type="button"
+                            disabled
+                            aria-label="رفع الملفات غير متاح حاليًا"
+                            title="رفع الملفات غير متاح حاليًا: لا يوجد عقد رفع فعلي معتمد"
                           >
-                            <input
-                              type="file"
-                              hidden
-                              disabled={chatLoading}
-                              onChange={(event) => {
-                                const file = event.target.files?.[0];
-                                if (file) {
-                                  setChatInput((current) =>
-                                    current
-                                      ? `${current}\n[ملف: ${file.name}]`
-                                      : `[ملف: ${file.name}]`
-                                  );
-                                }
-                                event.currentTarget.value = "";
-                                setChatToolsOpen(false);
-                              }}
-                            />
-                            <svg viewBox="0 0 24 24" aria-hidden="true">
-                              <path d="M7 3h7l4 4v14H7a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
-                              <path d="M14 3v5h5M8 13h8M8 17h6" />
-                            </svg>
                             <span>ملف</span>
-                          </label>
+                          </button>
 
                           <button
                             className="chat-tools-menu-button"
@@ -2055,7 +3692,7 @@ function App() {
                       }
                       type="button"
                       disabled={chatLoading}
-                      aria-label="التحدث بالصوت"
+                      aria-label={voiceListening ? "إيقاف التسجيل الصوتي" : "التحدث بالصوت"}
                       title="التحدث بالصوت"
                       onClick={handleVoiceInput}
                     >
@@ -2069,28 +3706,63 @@ function App() {
                   <textarea
                     value={chatInput}
                     onChange={(event) => setChatInput(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key === "Enter" &&
+                        !event.shiftKey &&
+                        !event.nativeEvent.isComposing
+                      ) {
+                        event.preventDefault();
+                        if (!chatLoading && chatInput.trim()) {
+                          void handleChatSubmit();
+                        }
+                      }
+                    }}
                     placeholder="اكتب رسالتك إلى أبو بشة..."
                     rows={1}
                     disabled={chatLoading}
                     aria-label="رسالة المحادثة"
                   />
 
-                  <button
-                    className="chat-send-button"
-                    type="submit"
-                    disabled={chatLoading || !chatInput.trim()}
-                    aria-label={
-                      chatLoading ? "جارٍ الإرسال" : "إرسال الرسالة"
-                    }
-                    title={chatLoading ? "جارٍ الإرسال" : "إرسال"}
-                  >
-                    {chatLoading ? "…" : "↑"}
-                  </button>
+                  {chatLoading ? (
+                    <button
+                      className="chat-send-button chat-cancel-button"
+                      type="button"
+                      onClick={cancelChatGeneration}
+                      aria-label="إلغاء توليد الرد"
+                      title="إلغاء توليد الرد"
+                    >
+                      <svg
+                        className="ui-icon"
+                        viewBox="0 0 24 24"
+                        aria-hidden="true"
+                      >
+                        <rect
+                          x="6"
+                          y="6"
+                          width="12"
+                          height="12"
+                          rx="2"
+                          fill="currentColor"
+                        />
+                      </svg>
+                    </button>
+                  ) : (
+                    <button
+                      className="chat-send-button"
+                      type="submit"
+                      disabled={!chatInput.trim()}
+                      aria-label="إرسال الرسالة"
+                      title="إرسال"
+                    >
+                      ↑
+                    </button>
+                  )}
                 </div>
 
                 <div className="chat-composer-hint">
                   <span>
-                    {voiceSpeaking
+                    {voiceSpeakingMessageId !== null
                       ? "يتحدث أبو بشة..."
                       : "الصوت المباشر متاح"}
                   </span>
@@ -2111,7 +3783,9 @@ function App() {
             </div>
 
             <div className="workspace-body">
-              <div className="placeholder-icon">{activeSection?.icon}</div>
+              <div className="placeholder-icon" aria-hidden="true">
+                {activeSection ? renderHubIcon(activeSection.icon) : null}
+              </div>
               <h2>{activeSection?.label}</h2>
               <p>
                 هذه الطبقة تعرض الحالة والبيانات فقط. لا توجد هنا أي قناة تنفيذ
@@ -2128,12 +3802,18 @@ function App() {
             key={section.id}
             className={active === section.id ? "nav-item active" : "nav-item"}
             onClick={() => {
-              setActive(section.id);
-              setActiveWorkspace("chat");
+              if (section.id === "overview" || section.id === "chat") {
+                setActiveWorkspace(section.id);
+                setActive(section.id);
+              } else {
+                setActive(section.id);
+              }
             }}
             type="button"
           >
-            <span>{section.icon}</span>
+            <span className="nav-item-icon" aria-hidden="true">
+              {renderHubIcon(section.icon)}
+            </span>
             <small>{section.label}</small>
           </button>
         ))}

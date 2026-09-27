@@ -9,7 +9,9 @@ def gradlePropertyOrEnv = { String name ->
 }
 
 def releaseCredentialFile =
-        gradlePropertyOrEnv('ABU_BASHA_RELEASE_CREDENTIAL_FILE')
+        gradlePropertyOrEnv('ABU_BASHA_RELEASE_CREDENTIAL_FILE') ?:
+        new File(System.getProperty("user.home"),
+            "abubasha/release/credentials.env").absolutePath
 
 def releaseKeystorePath =
         gradlePropertyOrEnv('ABU_BASHA_RELEASE_KEYSTORE')

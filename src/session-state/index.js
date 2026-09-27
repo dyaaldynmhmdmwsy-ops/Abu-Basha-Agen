@@ -85,6 +85,19 @@ class SessionStateManager {
 
       CREATE INDEX IF NOT EXISTS idx_state_transitions_session
         ON state_transitions(session_id, id);
+
+      CREATE TABLE IF NOT EXISTS conversation_turns (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
+        turn_index INTEGER NOT NULL,
+        role TEXT NOT NULL,
+        text TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY(session_id) REFERENCES sessions(session_id)
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_conversation_turns_session
+        ON conversation_turns(session_id, id);
     `);
   }
 
@@ -298,6 +311,119 @@ class SessionStateManager {
         reason: error.message
       };
     }
+  }
+
+  appendConversationTurn(sessionId, role, text) {
+    const id = String(sessionId || "").trim();
+    const normalizedRole =
+      String(role || "").trim().toLowerCase();
+    const normalizedText =
+      typeof text === "string"
+        ? text.trim()
+        : "";
+
+    if (
+      !id ||
+      !["user", "assistant"].includes(normalizedRole) ||
+      !normalizedText
+    ) {
+      return {
+        success: false,
+        type: "invalid_conversation_turn",
+        failClosed: true
+      };
+    }
+
+    const session = this.getSession(id);
+
+    if (!session) {
+      return {
+        success: false,
+        type: "session_not_found",
+        failClosed: true
+      };
+    }
+
+    const row = this.db.prepare(
+      "SELECT COALESCE(MAX(turn_index), -1) AS max_turn " +
+      "FROM conversation_turns WHERE session_id = ?"
+    ).get(id);
+
+    const turnIndex =
+      Number(row && row.max_turn !== undefined
+        ? row.max_turn
+        : -1) + 1;
+
+    const now = new Date().toISOString();
+
+    this.db.prepare(
+      "INSERT INTO conversation_turns " +
+      "(session_id, turn_index, role, text, created_at) " +
+      "VALUES (?, ?, ?, ?, ?)"
+    ).run(
+      id,
+      turnIndex,
+      normalizedRole,
+      normalizedText,
+      now
+    );
+
+    this.db.prepare(
+      "DELETE FROM conversation_turns " +
+      "WHERE session_id = ? AND id NOT IN (" +
+      "SELECT id FROM conversation_turns " +
+      "WHERE session_id = ? ORDER BY id DESC LIMIT 40)"
+    ).run(id, id);
+
+    return {
+      success: true,
+      type: "conversation_turn_appended",
+      sessionId: id,
+      role: normalizedRole,
+      turnIndex
+    };
+  }
+
+  getConversationHistory(sessionId, limit = 20) {
+    const id = String(sessionId || "").trim();
+
+    if (!id) {
+      return [];
+    }
+
+    const boundedLimit = Math.max(
+      1,
+      Math.min(Number(limit) || 20, 40)
+    );
+
+    return this.db.prepare(
+      "SELECT role, text, turn_index, created_at " +
+      "FROM conversation_turns " +
+      "WHERE session_id = ? " +
+      "ORDER BY id DESC LIMIT ?"
+    ).all(id, boundedLimit)
+      .reverse()
+      .map(row => ({
+        role: row.role,
+        text: row.text,
+        turnIndex: row.turn_index,
+        createdAt: row.created_at
+      }));
+  }
+
+  getConversationTurnCount(sessionId) {
+    const id = String(sessionId || "").trim();
+
+    if (!id) {
+      return 0;
+    }
+
+    const row = this.db.prepare(
+      "SELECT COUNT(*) AS count " +
+      "FROM conversation_turns WHERE session_id = ?"
+    ).get(id);
+
+    return Number(row && row.count ? row.count : 0);
   }
 
   getTransitions(sessionId) {

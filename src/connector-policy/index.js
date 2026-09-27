@@ -15,6 +15,10 @@ class ConnectorPolicy {
     this.version = "1.0.0";
     this.status = "online";
 
+    // Phase 28:
+    // Developer platform connectors may be registered and resolved,
+    // but remain policy-blocked until a dedicated production executor
+    // is implemented and explicitly allowed.
     this.allowedConnectors = new Set([
       "mock"
     ]);

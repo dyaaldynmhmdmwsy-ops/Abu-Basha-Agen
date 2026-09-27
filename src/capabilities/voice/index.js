@@ -92,7 +92,23 @@ class VoiceCapability {
       return {
         success: false,
         type: "stt_failed",
-        executionAllowed: false
+        message:
+          result && typeof result.message === "string"
+            ? result.message
+            : "Voice transcription provider failed.",
+        providerType:
+          result && typeof result.type === "string"
+            ? result.type
+            : null,
+        retryable:
+          result && typeof result.retryable === "boolean"
+            ? result.retryable
+            : false,
+        executionAllowed: false,
+        externalExecution: false,
+        actionExecution: "plan_only",
+        requiresApproval: true,
+        failClosed: true
       };
     }
 

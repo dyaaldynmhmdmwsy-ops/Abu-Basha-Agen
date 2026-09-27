@@ -10,6 +10,7 @@ const Master = require("../agents/master");
 const PlanVerificationGate = require("../phase21");
 const HumanApprovalGate = require("../phase22");
 const SessionStateManager = require("../session-state");
+const SettingsService = require("../settings");
 const AbuBashaPod = require("../agents/pods/abu-basha");
 
 const ConnectorPolicy = require("../connector-policy");
@@ -20,6 +21,9 @@ const QualityProvider = require("../diagnostic-center/providers/quality-provider
 
 const DeveloperToolRegistry = require("../developer-tools");
 const AppBuilderExecutor = require("../executors/app-builder-executor");
+const DevelopmentPipelineService = require("../development-pipeline");
+const DevelopmentPipelineExecutor = require("../development-pipeline/executor");
+const ProjectWorkspaceService = require("../project-workspace");
 const {
   createDefaultDeveloperPlatform
 } = require("../developer-platform");
@@ -27,8 +31,11 @@ const ConnectorHub = require("../connectors/hub");
 const HubMockConnector = require("../connectors/hub/mock-connector");
 const ConnectorResolver = require("../connectors/resolver");
 const GeminiAdapter = require("../connectors/adapters/gemini-adapter");
+const DeveloperPlatformConnector = require("../connectors/adapters/developer-platforms");
 const VoiceCapability = require("../capabilities/voice");
-const GeminiLiveAdapter = require("../connectors/adapters/gemini-live-adapter");
+const GeminiTTSAdapter = require("../connectors/adapters/gemini-tts-adapter");
+const GeminiSTTAdapter = require("../connectors/adapters/gemini-stt-adapter");
+const AbuBashaAgentsOrchestrator = require("./agents-orchestrator");
 const ResilienceManager = require("../resilience");
 const AuditStore = require("../observability/audit-store");
 class AgentRuntime {
@@ -48,6 +55,9 @@ class AgentRuntime {
     this.verificationGate = new PlanVerificationGate(this);
     this.approvalGate = new HumanApprovalGate(this);
     this.sessionState = new SessionStateManager(sessionStateOptions);
+    this.settings = new SettingsService({
+      projectRoot: this.projectRoot
+    });
     this.auditStore = new AuditStore({ dbPath: this.sessionState.dbPath });
     this.abuBashaPod = new AbuBashaPod({ mode: this.master.mode });
     this.master.registerPod("abu-basha", this.abuBashaPod);
@@ -73,6 +83,16 @@ class AgentRuntime {
 
     this.approvals = new ApprovalQueue();
 
+    // Smart Retry request identity / deduplication.
+    // Bounded in-memory state; no execution capability is added.
+    this.chatRequests = new Map();
+    this.chatRequestMaxEntries = 200;
+
+    // Chat-only logical cancellation markers.
+    // Bounded in-memory state; no approval/execution capability is added.
+    this.chatCancellations = new Map();
+    this.chatCancellationMaxEntries = 200;
+
     this.executionGate = new ExecutionGate({
       externalExecution: false,
       failClosed: true
@@ -80,6 +100,102 @@ class AgentRuntime {
 
     this.developerTools = new DeveloperToolRegistry(this.executionGate);
     this.appBuilderExecutor = new AppBuilderExecutor(this);
+    this.developmentPipeline = new DevelopmentPipelineService();
+    this.developmentPipelineExecutor = new DevelopmentPipelineExecutor({
+      projectRoot: this.projectRoot,
+      executionGate: this.executionGate,
+      failClosed: true,
+      externalExecution: false,
+      autonomousExecution: false,
+      requiresApproval: true,
+    });
+    this.projectWorkspace = new ProjectWorkspaceService();
+
+    /*
+     * PHASE31 CANONICAL DEVELOPMENT PIPELINE TOOL
+     *
+     * Canonical execution path:
+     * ApprovalQueue
+     *   -> Runtime.executeApproved()
+     *   -> PlanExecutor
+     *   -> DeveloperExecutor
+     *   -> DeveloperToolRegistry
+     *   -> DevelopmentPipelineExecutor
+     *
+     * The tool accepts only the already server-bound
+     * pipelineRequest supplied by the canonical plan.
+     *
+     * No client-controlled action/workspace/projectId is selected here.
+     */
+    const developmentPipelineToolRegistration =
+      this.developerTools.register(
+        "development_pipeline",
+        {
+          execute: async (payload = {}, context = {}) => {
+            const pipelineRequest =
+              payload &&
+              payload.pipelineRequest &&
+              typeof payload.pipelineRequest === "object"
+                ? payload.pipelineRequest
+                : null;
+
+            if (!pipelineRequest) {
+              return {
+                success: false,
+                type: "development_pipeline_request_missing",
+                executionAllowed: false,
+                failClosed: true
+              };
+            }
+
+            const approved =
+              !!(
+                context &&
+                context.options &&
+                context.options.approved === true
+              );
+
+            if (!approved) {
+              return {
+                success: false,
+                type: "approval_required",
+                executionAllowed: false,
+                failClosed: true
+              };
+            }
+
+            return this.developmentPipelineExecutor.execute(
+              pipelineRequest,
+              {
+                approved: true,
+                approvalId:
+                  context &&
+                  context.options &&
+                  typeof context.options.approvalId === "string"
+                    ? context.options.approvalId
+                    : null,
+                source: "plan_executor"
+              }
+            );
+          }
+        },
+        {
+          enabled: true,
+          category: "developer",
+          description:
+            "Canonical approved development pipeline execution boundary",
+          requiresApproval: true
+        }
+      );
+
+    if (
+      !developmentPipelineToolRegistration ||
+      developmentPipelineToolRegistration.success !== true
+    ) {
+      throw new Error(
+        "Phase31: development_pipeline tool registration failed."
+      );
+    }
 
     const developerPlatform = createDefaultDeveloperPlatform({
       registry: this.developerTools,
@@ -110,12 +226,107 @@ class AgentRuntime {
     // PHASE2_MOCK_BOOTSTRAP
     // PHASE 2 FINAL CONNECTOR BOOTSTRAP
     // Keep Manager, Executor, Hub, Resolver and Policy synchronized.    // Gemini AI Connector
-    const geminiConnector = new GeminiAdapter();
+    // Manual model selection is sourced from the validated persistent SettingsService.
+    // The Gemini adapter still resolves the selected model through ModelRouter/ModelRegistry.
+    const settingsSnapshot =
+      this.settings && typeof this.settings.get === "function"
+        ? this.settings.get()
+        : null;
+
+    const configuredGeminiModel =
+      settingsSnapshot &&
+      settingsSnapshot.success === true &&
+      settingsSnapshot.settings &&
+      settingsSnapshot.settings.ai &&
+      typeof settingsSnapshot.settings.ai.model === "string"
+        ? settingsSnapshot.settings.ai.model
+        : null;
+
+    const geminiConnector = new GeminiAdapter({
+      defaultModel: configuredGeminiModel
+    });
     this.voiceCapability = new VoiceCapability();
-    this.ttsProvider = new GeminiLiveAdapter();
+    this.ttsProvider = new GeminiTTSAdapter();
     this.voiceCapability.setTTSProvider(this.ttsProvider);
+    this.sttProvider = new GeminiSTTAdapter();
+    this.voiceCapability.setSTTProvider(this.sttProvider);
     this.geminiResilience = new ResilienceManager(this);
     this.geminiAdapter = geminiConnector;
+
+    // OpenAI Agents SDK orchestration over the existing Gemini + Resilience path.
+    this.agentsOrchestrator =
+      new AbuBashaAgentsOrchestrator({
+        executeModel: async (prompt, request) => {
+          const resilienceResult =
+            await this.geminiResilience.execute(
+              () =>
+                this.geminiAdapter.execute(
+                  {
+                    prompt
+                  },
+                  {
+                    channel: "chat",
+                    intent: "conversation",
+                    ...(request && request.context
+                      ? request.context
+                      : {})
+                  }
+                ),
+              {
+                channel: "chat",
+                intent: "conversation",
+                sessionId:
+                  request &&
+                  request.context &&
+                  request.context.sessionId
+                    ? request.context.sessionId
+                    : null
+              }
+            );
+
+          if (
+            !resilienceResult ||
+            resilienceResult.success !== true
+          ) {
+            return {
+              success: false,
+              type:
+                resilienceResult &&
+                resilienceResult.type
+                  ? resilienceResult.type
+                  : "chat_inference_failed",
+              resilience: resilienceResult
+            };
+          }
+
+          const inferenceResult =
+            resilienceResult.result;
+
+          if (
+            !inferenceResult ||
+            inferenceResult.success !== true
+          ) {
+            return {
+              success: false,
+              type:
+                inferenceResult &&
+                inferenceResult.type
+                  ? inferenceResult.type
+                  : "chat_inference_failed",
+              result: inferenceResult || null,
+              resilience: resilienceResult
+            };
+          }
+
+          return {
+            success: true,
+            text: inferenceResult.text || "",
+            model: inferenceResult.model || null,
+            result: inferenceResult,
+            resilience: resilienceResult
+          };
+        }
+      });
 
     this.registerConnector(
       "gemini",
@@ -161,7 +372,51 @@ class AgentRuntime {
       "gemini"
     );
 
+    // Phase 28: fail-closed developer-platform connector contracts.
+    // These definitions do not enable external execution.
+    const githubConnector = new DeveloperPlatformConnector("github", {
+      provider: "GitHub",
+      envKey: "GITHUB_TOKEN"
+    });
+
+    const gitlabConnector = new DeveloperPlatformConnector("gitlab", {
+      provider: "GitLab",
+      envKey: "GITLAB_TOKEN"
+    });
+
+    this.registerConnector(
+      "github",
+      githubConnector,
+      {
+        category: "developer",
+        description: "GitHub developer platform connector contract",
+        version: "1.0.0",
+        enabled: true,
+        requiresApproval: true,
+        externalExecution: true
+      }
+    );
+
+    this.registerConnector(
+      "gitlab",
+      gitlabConnector,
+      {
+        category: "developer",
+        description: "GitLab developer platform connector contract",
+        version: "1.0.0",
+        enabled: true,
+        requiresApproval: true,
+        externalExecution: true
+      }
+    );
+
+    this.connectorResolver.register("github", "github");
+    this.connectorResolver.register("gitlab", "gitlab");
+
     this.connectorPolicy.allowConnector("gemini");
+    // Phase 28: provider connectors are policy-approved for their explicit read-only allowlisted operations; external execution remains gated.
+    this.connectorPolicy.allowConnector("github");
+    this.connectorPolicy.allowConnector("gitlab");
 
 
 
@@ -418,7 +673,8 @@ class AgentRuntime {
         type: "approval_required",
         approvalRequired: true,
         approved: false,
-        executionAllowed: false
+        executionAllowed: false,
+        failClosed: true
       };
     }
 
@@ -578,7 +834,52 @@ class AgentRuntime {
    * This is inference only. It does not create approval and does not
    * enter ConnectorGateway / PlanExecutor / external execution.
    */
-  async synthesizeVoice(text, options = {}) {
+  async transcribeVoice(audio, context = {}) {
+    if (!this.voiceCapability || typeof this.voiceCapability.transcribe !== "function") {
+      return {
+        success: false,
+        type: "stt_capability_unavailable",
+        message: "Voice transcription capability is unavailable.",
+        executionAllowed: false,
+        externalExecution: false,
+        actionExecution: "plan_only",
+        requiresApproval: true,
+        failClosed: true,
+      };
+    }
+
+    try {
+      const result = await this.voiceCapability.transcribe(audio, context);
+
+      return result && typeof result === "object"
+        ? result
+        : {
+            success: false,
+            type: "stt_invalid_result",
+            message: "Voice transcription returned an invalid result.",
+            executionAllowed: false,
+            externalExecution: false,
+            actionExecution: "plan_only",
+            requiresApproval: true,
+            failClosed: true,
+          };
+    } catch (error) {
+      return {
+        success: false,
+        type: "stt_runtime_failed",
+        message: error instanceof Error
+          ? error.message
+          : "Voice transcription failed.",
+        executionAllowed: false,
+        externalExecution: false,
+        actionExecution: "plan_only",
+        requiresApproval: true,
+        failClosed: true,
+      };
+    }
+  }
+
+async synthesizeVoice(text, options = {}) {
     if (
       !this.voiceCapability ||
       typeof this.voiceCapability.synthesize !== "function"
@@ -594,11 +895,450 @@ class AgentRuntime {
       };
     }
 
-    return this.voiceCapability.synthesize(text, options);
+    const result =
+      await this.voiceCapability.synthesize(text, options);
+
+    const messageId =
+      options &&
+      typeof options.messageId === "string"
+        ? options.messageId.trim()
+        : "";
+
+    if (!messageId) {
+      throw new Error("TTS messageId is required");
+    }
+
+    if (!result || typeof result !== "object") {
+      throw new Error("Invalid TTS synthesis result");
+    }
+
+    return {
+      ...result,
+      messageId
+    };
+  }
+
+  async cancelChat(requestId) {
+    const id =
+      typeof requestId === "string"
+        ? requestId.trim()
+        : "";
+
+    if (!id) {
+      return {
+        success: false,
+        type: "invalid_chat_cancel_request",
+        executionAllowed: false,
+        externalExecution: false,
+        failClosed: true,
+        message: "معرّف طلب المحادثة مطلوب."
+      };
+    }
+
+    this.chatCancellations.set(id, {
+      cancelledAt: Date.now()
+    });
+
+    while (
+      this.chatCancellations.size >
+      this.chatCancellationMaxEntries
+    ) {
+      const oldest =
+        this.chatCancellations.keys().next().value;
+
+      if (oldest === undefined) {
+        break;
+      }
+
+      this.chatCancellations.delete(oldest);
+    }
+
+    return {
+      success: true,
+      type: "chat_generation_cancelled",
+      message: "تم إلغاء توليد المحادثة.",
+      intent: "conversation",
+      approvalRequired: false,
+      executionAllowed: false,
+      externalExecution: false,
+      cancelled: true,
+      failClosed: true,
+      requestId: id
+    };
+  }
+
+  async *chatStream(prompt, options = {}) {
+    const text =
+      typeof prompt === "string"
+        ? prompt.trim()
+        : "";
+
+    const requestId =
+      typeof options.requestId === "string" &&
+      options.requestId.trim()
+        ? options.requestId.trim()
+        : null;
+
+    const sessionId =
+      typeof options.sessionId === "string" &&
+      options.sessionId.trim()
+        ? options.sessionId.trim()
+        : null;
+
+    const cancelled = () => ({
+      success: false,
+      type: "chat_generation_cancelled",
+      message: "تم إلغاء توليد المحادثة.",
+      intent: "conversation",
+      approvalRequired: false,
+      executionAllowed: false,
+      externalExecution: false,
+      cancelled: true,
+      failClosed: true,
+      requestId
+    });
+
+    const isCancelled = () =>
+      !!(
+        requestId &&
+        this.chatCancellations &&
+        this.chatCancellations.has(requestId)
+      );
+
+    if (!text) {
+      yield {
+        success: false,
+        type: "invalid_chat_prompt",
+        executionAllowed: false,
+        externalExecution: false,
+        failClosed: true
+      };
+      return;
+    }
+
+    if (isCancelled()) {
+      yield cancelled();
+      return;
+    }
+
+    const intent = this.classifyChatIntent(text);
+
+    if (!intent.success) {
+      yield {
+        success: false,
+        type: intent.type,
+        executionAllowed: false,
+        externalExecution: false,
+        failClosed: true
+      };
+      return;
+    }
+
+    // Streaming is informational-chat only.
+    // Action proposals remain on the canonical approval path.
+    if (intent.intent === "action") {
+      yield {
+        success: true,
+        type: "action_proposal",
+        intent: "action",
+        approvalRequired: true,
+        executionAllowed: false,
+        externalExecution: true,
+        executable: false,
+        proposal: intent.proposal
+      };
+      return;
+    }
+
+    let conversationHistory = [];
+
+    if (sessionId) {
+      try {
+        this.sessionState.createSession(sessionId, {
+          channel: "chat_stream"
+        });
+
+        conversationHistory =
+          this.sessionState.getConversationHistory(
+            sessionId,
+            20
+          );
+
+        if (!Array.isArray(conversationHistory)) {
+          yield {
+            success: false,
+            type: "conversation_state_unavailable",
+            intent: "conversation",
+            approvalRequired: false,
+            executionAllowed: false,
+            externalExecution: false,
+            failClosed: true,
+            requestId,
+            sessionId,
+            message: "تعذر تحميل سياق الجلسة."
+          };
+          return;
+        }
+      } catch (error) {
+        yield {
+          success: false,
+          type: "conversation_state_load_failed",
+          intent: "conversation",
+          approvalRequired: false,
+          executionAllowed: false,
+          externalExecution: false,
+          failClosed: true,
+          requestId,
+          sessionId,
+          message:
+            error?.message
+              ? String(error.message)
+              : String(error)
+        };
+        return;
+      }
+    }
+
+    if (
+      !this.geminiAdapter ||
+      typeof this.geminiAdapter.openStream !== "function"
+    ) {
+      yield {
+        success: false,
+        type: "streaming_unavailable",
+        intent: "conversation",
+        approvalRequired: false,
+        executionAllowed: false,
+        externalExecution: false,
+        failClosed: true,
+        message: "مسار Streaming غير متاح."
+      };
+      return;
+    }
+
+    let emittedText = "";
+
+    try {
+      const resilienceResult =
+        await this.geminiResilience.execute(
+          () =>
+            this.geminiAdapter.openStream(
+              {
+                prompt: text,
+                ...(conversationHistory.length
+                  ? { conversationHistory }
+                  : {})
+              },
+              {
+                sessionId,
+                requestId
+              }
+            ),
+          {
+            channel: "chat_stream",
+            intent: "conversation",
+            sessionId,
+            requestId
+          }
+        );
+
+      if (
+        !resilienceResult ||
+        resilienceResult.success !== true ||
+        !resilienceResult.result ||
+        resilienceResult.result.success !== true ||
+        !resilienceResult.result.stream
+      ) {
+        const failed =
+          resilienceResult?.result || resilienceResult;
+
+        yield {
+          success: false,
+          type:
+            failed?.type ||
+            "chat_stream_failed",
+          intent: "conversation",
+          approvalRequired: false,
+          executionAllowed: false,
+          externalExecution: false,
+          failClosed: true,
+          requestId,
+          retryable:
+            failed?.retryable === true,
+          message:
+            failed?.message ||
+            "فشل فتح قناة Streaming."
+        };
+        return;
+      }
+
+      for await (const chunk of resilienceResult.result.stream) {
+        if (isCancelled()) {
+          yield cancelled();
+          return;
+        }
+
+        if (!chunk || chunk.success !== true) {
+          yield {
+            success: false,
+            type:
+              chunk?.type ||
+              "chat_stream_failed",
+            intent: "conversation",
+            approvalRequired: false,
+            executionAllowed: false,
+            externalExecution: false,
+            failClosed: true,
+            message:
+              chunk?.message ||
+              "فشل توليد Streaming."
+          };
+          return;
+        }
+
+        if (chunk.type === "gemini_stream_chunk") {
+          const delta =
+            typeof chunk.text === "string"
+              ? chunk.text
+              : "";
+
+          if (!delta) {
+            continue;
+          }
+
+          emittedText += delta;
+
+          yield {
+            success: true,
+            type: "conversation_stream_chunk",
+            intent: "conversation",
+            approvalRequired: false,
+            executionAllowed: false,
+            externalExecution: false,
+            requestId,
+            ...(sessionId ? { sessionId } : {}),
+            text: delta,
+            done: false
+          };
+          continue;
+        }
+
+        if (chunk.type === "gemini_stream_end") {
+          if (sessionId) {
+            try {
+              const userTurn =
+                this.sessionState.appendConversationTurn(
+                  sessionId,
+                  "user",
+                  text
+                );
+
+              if (!userTurn || userTurn.success !== true) {
+                yield {
+                  success: false,
+                  type: "conversation_state_persistence_failed",
+                  intent: "conversation",
+                  approvalRequired: false,
+                  executionAllowed: false,
+                  externalExecution: false,
+                  failClosed: true,
+                  requestId,
+                  sessionId,
+                  message: "تعذر حفظ رسالة المستخدم في سياق الجلسة."
+                };
+                return;
+              }
+
+              if (emittedText.trim()) {
+                const assistantTurn =
+                  this.sessionState.appendConversationTurn(
+                    sessionId,
+                    "assistant",
+                    emittedText
+                  );
+
+                if (
+                  !assistantTurn ||
+                  assistantTurn.success !== true
+                ) {
+                  yield {
+                    success: false,
+                    type: "conversation_state_persistence_failed",
+                    intent: "conversation",
+                    approvalRequired: false,
+                    executionAllowed: false,
+                    externalExecution: false,
+                    failClosed: true,
+                    requestId,
+                    sessionId,
+                    message: "تعذر حفظ رد المساعد في سياق الجلسة."
+                  };
+                  return;
+                }
+              }
+            } catch (error) {
+              yield {
+                success: false,
+                type: "conversation_state_persistence_failed",
+                intent: "conversation",
+                approvalRequired: false,
+                executionAllowed: false,
+                externalExecution: false,
+                failClosed: true,
+                requestId,
+                sessionId,
+                message:
+                  error?.message
+                    ? String(error.message)
+                    : String(error)
+              };
+              return;
+            }
+          }
+
+          yield {
+            success: true,
+            type: "conversation_stream_end",
+            intent: "conversation",
+            approvalRequired: false,
+            executionAllowed: false,
+            externalExecution: false,
+            requestId,
+            ...(sessionId ? { sessionId } : {}),
+            text: emittedText,
+            done: true
+          };
+          return;
+        }
+      }
+    } catch (error) {
+      if (isCancelled()) {
+        yield cancelled();
+        return;
+      }
+
+      yield {
+        success: false,
+        type: "chat_stream_failed",
+        intent: "conversation",
+        approvalRequired: false,
+        executionAllowed: false,
+        externalExecution: false,
+        failClosed: true,
+        requestId,
+        message:
+          error?.message
+            ? String(error.message)
+            : String(error)
+      };
+    }
   }
 
   async chat(prompt, options = {}) {
-    const text = typeof prompt === "string" ? prompt.trim() : "";
+    const text =
+      typeof prompt === "string"
+        ? prompt.trim()
+        : "";
 
     if (!text) {
       return {
@@ -611,114 +1351,320 @@ class AgentRuntime {
       };
     }
 
-    const intent = this.classifyChatIntent(text);
+    const requestId =
+      typeof options.requestId === "string"
+        ? options.requestId.trim()
+        : "";
 
-    if (!intent.success) {
-      return {
-        success: false,
-        type: intent.type,
-        executionAllowed: false,
-        externalExecution: false,
-        failClosed: true
-      };
-    }
+    const sessionId =
+      typeof options.sessionId === "string"
+        ? options.sessionId.trim()
+        : "";
 
-    if (intent.intent === "action") {
-      return {
-        success: true,
-        type: "action_proposal",
-        intent: "action",
-        approvalRequired: true,
-        executionAllowed: false,
-        externalExecution: true,
-        executable: false,
-        proposal: intent.proposal
-      };
-    }
+    const isChatCancelled = () =>
+      !!(
+        requestId &&
+        this.chatCancellations &&
+        this.chatCancellations.has(requestId)
+      );
 
-    if (
-      !this.geminiAdapter ||
-      typeof this.geminiAdapter.execute !== "function"
-    ) {
-      return {
-        success: false,
-        type: "ai_inference_unavailable",
-        intent: "conversation",
-        approvalRequired: false,
-        executionAllowed: false,
-        externalExecution: false,
-        failClosed: true,
-        message: "مسار استدلال المحادثة غير متاح."
-      };
-    }
-
-    const resilienceResult = await this.geminiResilience.execute(
-      () =>
-        this.geminiAdapter.execute(
-          {
-            prompt: text,
-            ...(options.payload || {})
-          },
-          {
-            ...(options.context || {}),
-            channel: "chat",
-            intent: "conversation"
-          }
-        ),
-      {
-        ...(options.context || {}),
-        channel: "chat",
-        intent: "conversation",
-        sessionId: options.context?.sessionId || null
-      }
-    );
-
-    if (!resilienceResult || resilienceResult.success !== true) {
-      return {
-        success: false,
-        type: resilienceResult?.type || "chat_inference_failed",
-        intent: "conversation",
-        approvalRequired: false,
-        executionAllowed: false,
-        externalExecution: false,
-        failClosed: true,
-        result: resilienceResult?.result || null,
-        resilience: resilienceResult
-      };
-    }
-
-    const inferenceResult = resilienceResult.result;
-
-    if (!inferenceResult || inferenceResult.success !== true) {
-      return {
-        success: false,
-        type: inferenceResult?.type || "chat_inference_failed",
-        intent: "conversation",
-        approvalRequired: false,
-        executionAllowed: false,
-        externalExecution: false,
-        failClosed: true,
-        result: inferenceResult || null,
-        resilience: resilienceResult
-      };
-    }
-
-    return {
-      success: true,
-      type: "conversation_response",
+    const cancelledResult = () => ({
+      success: false,
+      type: "chat_generation_cancelled",
+      message: "تم إلغاء توليد المحادثة.",
       intent: "conversation",
       approvalRequired: false,
       executionAllowed: false,
       externalExecution: false,
-      text: inferenceResult.text || "",
-      model: inferenceResult.model || null,
-      result: inferenceResult,
-      resilience: {
-        attempts: resilienceResult.attempts,
-        retried: resilienceResult.retried,
-        maxRetries: resilienceResult.resilience?.maxRetries ?? null
+      cancelled: true,
+      failClosed: true,
+      requestId: requestId || null
+    });
+
+    if (isChatCancelled()) {
+      return cancelledResult();
+    }
+
+    const requestKey =
+      requestId
+        ? `chat:${requestId}`
+        : null;
+
+    const requestFingerprint = requestKey
+      ? crypto
+          .createHash("sha256")
+          .update(
+            JSON.stringify({
+              prompt: text,
+              sessionId,
+              options
+            })
+          )
+          .digest("hex")
+      : null;
+
+    if (requestKey && this.chatRequests.has(requestKey)) {
+      const existing =
+        this.chatRequests.get(requestKey);
+
+      if (
+        !existing ||
+        existing.fingerprint !== requestFingerprint
+      ) {
+        return {
+          success: false,
+          type: "chat_request_id_conflict",
+          message:
+            "تم رفض إعادة استخدام معرّف طلب المحادثة مع بيانات مختلفة.",
+          intent: "conversation",
+          approvalRequired: false,
+          executionAllowed: false,
+          externalExecution: false,
+          failClosed: true
+        };
       }
+
+      if (existing.promise) {
+        return existing.promise;
+      }
+
+      if (existing.result) {
+        return existing.result;
+      }
+    }
+
+    if (isChatCancelled()) {
+      return cancelledResult();
+    }
+
+    const executeChat = async () => {
+      const intent =
+        this.classifyChatIntent(text);
+
+      if (!intent.success) {
+        return {
+          success: false,
+          type: intent.type,
+          executionAllowed: false,
+          externalExecution: false,
+          failClosed: true
+        };
+      }
+
+      if (intent.intent === "action") {
+        return {
+          success: true,
+          type: "action_proposal",
+          intent: "action",
+          approvalRequired: true,
+          executionAllowed: false,
+          externalExecution: true,
+          executable: false,
+          proposal: intent.proposal
+        };
+      }
+
+      if (
+        !this.geminiAdapter ||
+        typeof this.geminiAdapter.execute !== "function"
+      ) {
+        return {
+          success: false,
+          type: "ai_inference_unavailable",
+          intent: "conversation",
+          approvalRequired: false,
+          executionAllowed: false,
+          externalExecution: false,
+          failClosed: true,
+          message:
+            "مسار استدلال المحادثة غير متاح."
+        };
+      }
+
+      let conversationHistory = [];
+
+      if (sessionId) {
+        const sessionResult =
+          this.sessionState.createSession(
+            sessionId,
+            {
+              channel: "chat"
+            }
+          );
+
+        if (
+          !sessionResult ||
+          sessionResult.success !== true
+        ) {
+          return {
+            success: false,
+            type: "session_state_unavailable",
+            intent: "conversation",
+            approvalRequired: false,
+            executionAllowed: false,
+            externalExecution: false,
+            failClosed: true
+          };
+        }
+
+        conversationHistory =
+          this.sessionState.getConversationHistory(
+            sessionId,
+            20
+          );
+      }
+
+      const agentsResult =
+        await this.agentsOrchestrator.run(
+          text,
+          {
+            conversationHistory,
+            context: {
+              ...(options.context || {}),
+              ...(sessionId
+                ? { sessionId }
+                : {}),
+              ...(requestId
+                ? { requestId }
+                : {})
+            }
+          }
+        );
+
+      if (isChatCancelled()) {
+        return cancelledResult();
+      }
+
+      if (
+        !agentsResult ||
+        agentsResult.success !== true
+      ) {
+        return {
+          success: false,
+          type:
+            agentsResult &&
+            agentsResult.type
+              ? agentsResult.type
+              : "chat_inference_failed",
+          intent: "conversation",
+          approvalRequired: false,
+          executionAllowed: false,
+          externalExecution: false,
+          failClosed: true,
+          result: agentsResult || null
+        };
+      }
+
+      if (sessionId) {
+        const userTurn =
+          this.sessionState.appendConversationTurn(
+            sessionId,
+            "user",
+            text
+          );
+
+        const assistantText =
+          typeof agentsResult.text === "string"
+            ? agentsResult.text.trim()
+            : "";
+
+        const assistantTurn =
+          assistantText
+            ? this.sessionState.appendConversationTurn(
+                sessionId,
+                "assistant",
+                assistantText
+              )
+            : {
+                success: false,
+                type: "empty_assistant_turn"
+              };
+
+        if (
+          !userTurn ||
+          userTurn.success !== true ||
+          !assistantTurn ||
+          assistantTurn.success !== true
+        ) {
+          return {
+            success: false,
+            type: "conversation_state_persistence_failed",
+            intent: "conversation",
+            approvalRequired: false,
+            executionAllowed: false,
+            externalExecution: false,
+            failClosed: true
+          };
+        }
+      }
+
+      return {
+        success: true,
+        type: "conversation_response",
+        intent: "conversation",
+        approvalRequired: false,
+        executionAllowed: false,
+        externalExecution: false,
+        text: agentsResult.text || "",
+        model: agentsResult.model || null,
+        result: agentsResult,
+        ...(sessionId
+          ? { sessionId }
+          : {}),
+        ...(requestId
+          ? { requestId }
+          : {})
+      };
     };
+
+    if (!requestKey) {
+      return executeChat();
+    }
+
+    const promise = executeChat();
+
+    this.chatRequests.set(
+      requestKey,
+      {
+        fingerprint: requestFingerprint,
+        promise
+      }
+    );
+
+    try {
+      const result = await promise;
+
+      this.chatRequests.set(
+        requestKey,
+        {
+          fingerprint: requestFingerprint,
+          result
+        }
+      );
+
+      while (
+        this.chatRequests.size >
+        this.chatRequestMaxEntries
+      ) {
+        const oldestKey =
+          this.chatRequests.keys().next().value;
+
+        if (!oldestKey) {
+          break;
+        }
+
+        this.chatRequests.delete(
+          oldestKey
+        );
+      }
+
+      return result;
+    } catch (error) {
+      this.chatRequests.delete(
+        requestKey
+      );
+      throw error;
+    }
   }
 
   /**
@@ -972,6 +1918,377 @@ class AgentRuntime {
     );
   }
 
+  getProjectWorkspaceStatus() {
+    return this.projectWorkspace.getStatus();
+  }
+
+  createProjectWorkspace(request = {}) {
+    return this.projectWorkspace.createWorkspace(request);
+  }
+
+  getProjectWorkspace(id) {
+    return this.projectWorkspace.getWorkspace(id);
+  }
+
+  listProjectWorkspaces(type = null) {
+    return this.projectWorkspace.listWorkspaces(type);
+  }
+
+  getDevelopmentPipelineStatus() {
+    if (
+      !this.developmentPipeline ||
+      typeof this.developmentPipeline.getStatus !== "function"
+    ) {
+      return {
+        success: false,
+        type: "development_pipeline_unavailable",
+        failClosed: true
+      };
+    }
+
+    return this.developmentPipeline.getStatus();
+  }
+
+  getDevelopmentPipelineExecutorStatus() {
+    if (
+      !this.developmentPipelineExecutor ||
+      typeof this.developmentPipelineExecutor.getStatus !== "function"
+    ) {
+      return {
+        success: false,
+        type: "development_pipeline_executor_status",
+        failClosed: true,
+        executable: false,
+      };
+    }
+
+    return this.developmentPipelineExecutor.getStatus();
+  }
+
+  executeDevelopmentPipeline(request = {}, context = {}) {
+    if (
+      !this.developmentPipelineExecutor ||
+      typeof this.developmentPipelineExecutor.execute !== "function"
+    ) {
+      return Promise.resolve({
+        success: false,
+        type: "development_pipeline_execution",
+        failClosed: true,
+        blocked: true,
+        reason: "executor_unavailable",
+      });
+    }
+
+    return this.developmentPipelineExecutor.execute(request, context);
+  }
+
+  createDevelopmentPipelineRequest(request = {}) {
+    if (
+      !this.developmentPipeline ||
+      typeof this.developmentPipeline.createRequest !== "function"
+    ) {
+      return {
+        success: false,
+        type: "development_pipeline_unavailable",
+        failClosed: true
+      };
+    }
+
+    return this.developmentPipeline.createRequest(request);
+  }
+
+  createDevelopmentPipelineApproval(request = {}) {
+    if (
+      !request ||
+      typeof request !== "object" ||
+      Array.isArray(request)
+    ) {
+      return {
+        success: false,
+        type: "development_pipeline_approval",
+        failClosed: true,
+        blocked: true,
+        reason: "invalid_request",
+      };
+    }
+
+    const action =
+      typeof request.action === "string" ? request.action.trim() : "";
+    const workspace =
+      typeof request.workspace === "string" ? request.workspace.trim() : "";
+    const projectId =
+      typeof request.projectId === "string" ? request.projectId.trim() : "";
+
+    const allowedActions = new Set([
+      "build",
+      "test",
+      "debug",
+      "release",
+    ]);
+
+    const allowedWorkspaces = new Set([
+      "coding",
+      "editing",
+      "studio",
+    ]);
+
+    if (!allowedActions.has(action)) {
+      return {
+        success: false,
+        type: "development_pipeline_approval",
+        failClosed: true,
+        blocked: true,
+        reason: "invalid_action",
+      };
+    }
+
+    if (!allowedWorkspaces.has(workspace)) {
+      return {
+        success: false,
+        type: "development_pipeline_approval",
+        failClosed: true,
+        blocked: true,
+        reason: "invalid_workspace",
+      };
+    }
+
+    if (!projectId) {
+      return {
+        success: false,
+        type: "development_pipeline_approval",
+        failClosed: true,
+        blocked: true,
+        reason: "project_id_required",
+      };
+    }
+
+    const pipelineCreated = this.developmentPipeline.createRequest({
+      ...request,
+      action,
+      workspace,
+      projectId,
+    });
+
+    if (
+      !pipelineCreated ||
+      pipelineCreated.success !== true ||
+      !pipelineCreated.request ||
+      typeof pipelineCreated.request.id !== "string"
+    ) {
+      return {
+        success: false,
+        type: "development_pipeline_approval",
+        failClosed: true,
+        blocked: true,
+        reason: "pipeline_request_creation_failed",
+      };
+    }
+
+    const pipelineRequest = pipelineCreated.request;
+
+    const approvalPlan = {
+      id: "development_pipeline",
+      name: "Development Pipeline",
+      category: "development",
+      pipelineRequestId: pipelineRequest.id,
+      action,
+      workspace,
+      projectId,
+      steps: [
+        {
+          action,
+          workspace,
+          projectId,
+        },
+      ],
+    };
+
+    const approval = this.createApproval(approvalPlan);
+
+    if (!approval || approval.success !== true || !approval.item) {
+      return {
+        success: false,
+        type: "development_pipeline_approval",
+        failClosed: true,
+        blocked: true,
+        reason: "approval_creation_failed",
+      };
+    }
+
+    return {
+      success: true,
+      type: "development_pipeline_approval",
+      failClosed: true,
+      requiresApproval: true,
+      approved: false,
+      request: pipelineRequest,
+      approvalId: approval.item.id,
+      approval: approval.item,
+    };
+  }
+
+  async executeApprovedDevelopmentPipeline(approvalId) {
+    if (!approvalId || typeof approvalId !== "string") {
+      return {
+        success: false,
+        type: "invalid_approval_id",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    const approval = this.approvals.getAll().find(
+      item => item && item.id === approvalId
+    );
+
+    if (!approval) {
+      return {
+        success: false,
+        type: "approval_not_found",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    if (approval.status !== "approved") {
+      return {
+        success: false,
+        type: "approval_required",
+        approvalRequired: true,
+        approved: false,
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    if (approval.planId !== "development_pipeline") {
+      return {
+        success: false,
+        type: "invalid_approval_plan",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    const plan = approval.plan || {};
+
+    const pipelineRequestId =
+      typeof plan.pipelineRequestId === "string"
+        ? plan.pipelineRequestId.trim()
+        : "";
+
+    const action =
+      typeof plan.action === "string"
+        ? plan.action.trim().toLowerCase()
+        : "";
+
+    const workspace =
+      typeof plan.workspace === "string"
+        ? plan.workspace.trim().toLowerCase()
+        : "";
+
+    const projectId =
+      typeof plan.projectId === "string"
+        ? plan.projectId.trim()
+        : "";
+
+    if (!pipelineRequestId || !action || !workspace || !projectId) {
+      return {
+        success: false,
+        type: "invalid_approval_binding",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    const stored =
+      this.developmentPipeline.getRequest(pipelineRequestId);
+
+    if (
+      !stored ||
+      stored.success !== true ||
+      !stored.request
+    ) {
+      return {
+        success: false,
+        type: "pipeline_request_not_found",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    const pipelineRequest = stored.request;
+
+    if (
+      pipelineRequest.id !== pipelineRequestId ||
+      pipelineRequest.action !== action ||
+      pipelineRequest.workspace !== workspace ||
+      pipelineRequest.projectId !== projectId
+    ) {
+      return {
+        success: false,
+        type: "approval_binding_mismatch",
+        executionAllowed: false,
+        failClosed: true
+      };
+    }
+
+    /*
+     * CANONICAL PHASE31 EXECUTION:
+     *
+     * ApprovalQueue
+     * -> Runtime.executeApproved()
+     * -> PlanExecutor
+     * -> DeveloperExecutor
+     * -> DeveloperToolRegistry
+     * -> DevelopmentPipelineExecutor
+     *
+     * The exact binding above is checked BEFORE entering PlanExecutor.
+     */
+    return this.executeApproved(
+      approvalId,
+      "development_pipeline",
+      {
+        pipelineRequest
+      },
+      {
+        approved: true,
+        requiresApproval: true,
+        approvalId,
+        source: "development_pipeline_approval"
+      }
+    );
+  }
+  getDevelopmentPipelineRequest(id) {
+    if (
+      !this.developmentPipeline ||
+      typeof this.developmentPipeline.getRequest !== "function"
+    ) {
+      return {
+        success: false,
+        type: "development_pipeline_unavailable",
+        failClosed: true
+      };
+    }
+
+    return this.developmentPipeline.getRequest(id);
+  }
+
+  listDevelopmentPipelineRequests(limit = 50) {
+    if (
+      !this.developmentPipeline ||
+      typeof this.developmentPipeline.listRequests !== "function"
+    ) {
+      return {
+        success: false,
+        type: "development_pipeline_unavailable",
+        failClosed: true
+      };
+    }
+
+    return this.developmentPipeline.listRequests(limit);
+  }
+
   createApproval(plan) {
     return this.approvals.create(plan);
   }
@@ -1084,6 +2401,46 @@ class AgentRuntime {
     return this.approvals.getPending();
   }
 
+
+  getSettings() {
+    if (!this.settings || typeof this.settings.get !== "function") {
+      return {
+        success: false,
+        type: "settings_unavailable",
+        failClosed: true
+      };
+    }
+
+    return this.settings.get();
+  }
+
+  getSettingsStatus() {
+    if (!this.settings || typeof this.settings.getStatus !== "function") {
+      return {
+        status: "unavailable",
+        type: "settings_service",
+        failClosed: true
+      };
+    }
+
+    return this.settings.getStatus();
+  }
+
+  updateSettings(patch, context = {}) {
+    if (!this.settings || typeof this.settings.update !== "function") {
+      return {
+        success: false,
+        type: "settings_unavailable",
+        failClosed: true
+      };
+    }
+
+    return this.settings.update(patch, {
+      ...context,
+      approved: context.approved === true,
+      externalExecution: false
+    });
+  }
 
   getDiagnosticStatus() {
     if (

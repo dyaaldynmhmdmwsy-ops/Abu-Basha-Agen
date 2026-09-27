@@ -2,7 +2,9 @@
 
 const { GoogleGenAI } = require("@google/genai");
 
-const DEFAULT_TTS_MODEL = "gemini-3.1-flash-tts-preview";
+const DEFAULT_TTS_MODEL = "gemini-3.8-flash-tts";
+const DEFAULT_TTS_VOICE = "Kore";
+const DEFAULT_TIMEOUT_MS = 30000;
 
 class GeminiTTSAdapter {
   constructor(options = {}) {
@@ -10,15 +12,27 @@ class GeminiTTSAdapter {
     this.version = "1.0.0";
     this.status = "online";
     this.providerNeutral = true;
+
     this.model =
       options.model ||
       process.env.GEMINI_TTS_MODEL ||
       DEFAULT_TTS_MODEL;
 
+    this.voice =
+      options.voice ||
+      process.env.GEMINI_TTS_VOICE ||
+      DEFAULT_TTS_VOICE;
+
     this.apiKey =
       options.apiKey ||
       process.env.GEMINI_API_KEY ||
       "";
+
+    this.timeoutMs = Number(
+      options.timeoutMs ||
+      process.env.GEMINI_TTS_TIMEOUT_MS ||
+      DEFAULT_TIMEOUT_MS
+    );
 
     this.client = this.apiKey
       ? new GoogleGenAI({ apiKey: this.apiKey })
@@ -31,14 +45,18 @@ class GeminiTTSAdapter {
         ? text.trim()
         : "";
 
+    const security = {
+      executionAllowed: false,
+      externalExecution: false,
+      actionExecution: "presentation_only",
+      requiresApproval: true
+    };
+
     if (!input) {
       return {
         success: false,
         type: "tts_text_required",
-        executionAllowed: false,
-        externalExecution: false,
-        actionExecution: "presentation_only",
-        requiresApproval: true,
+        ...security,
         failClosed: true
       };
     }
@@ -47,81 +65,92 @@ class GeminiTTSAdapter {
       return {
         success: false,
         type: "tts_provider_not_configured",
-        executionAllowed: false,
-        externalExecution: false,
-        actionExecution: "presentation_only",
-        requiresApproval: true,
+        model: this.model,
+        ...security,
         failClosed: true
       };
     }
 
+    const voice =
+      options.voiceName ||
+      options.voice ||
+      this.voice;
+
+    const style =
+      options.style ||
+      "Natural Sudanese Arabic delivery. Clear, warm, calm, conversational pronunciation. Preserve the supplied transcript exactly; do not paraphrase, summarize, answer, or add words.";
+
     try {
-      const response = await this.client.models.generateContent({
-        model: this.model,
-        contents: input,
-        config: {
-          responseModalities: ["AUDIO"],
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: {
-                voiceName:
-                  options.voiceName ||
-                  process.env.GEMINI_TTS_VOICE ||
-                  "Kore"
+      const interaction = await Promise.race([
+        this.client.interactions.create({
+          model: this.model,
+          input: [
+            {
+              type: "user_input",
+              content: [
+                {
+                  type: "text",
+                  text: input,
+                  annotations: [
+                    {
+                      type: "speech_metadata",
+                      style
+                    }
+                  ]
+                }
+              ]
+            }
+          ],
+          response_format: {
+            type: "audio"
+          },
+          generation_config: {
+            speech_config: [
+              {
+                voice
               }
-            },
-            languageCode:
-              options.languageCode ||
-              "ar-SA"
+            ]
           }
-        }
-      });
+        }),
+        new Promise((_, reject) =>
+          setTimeout(
+            () => reject(new Error("tts_timeout")),
+            this.timeoutMs
+          )
+        )
+      ]);
 
-      const audio =
-        response &&
-        response.candidates &&
-        response.candidates[0] &&
-        response.candidates[0].content &&
-        response.candidates[0].content.parts
-          ? response.candidates[0].content.parts.find(
-              (part) =>
-                part &&
-                part.inlineData &&
-                typeof part.inlineData.data === "string"
-            )
-          : null;
+      const audio = interaction?.output_audio;
 
-      if (!audio || !audio.inlineData) {
+      if (
+        !audio ||
+        typeof audio.data !== "string" ||
+        !audio.data
+      ) {
         return {
           success: false,
           type: "tts_audio_not_returned",
           model: this.model,
-          executionAllowed: false,
-          externalExecution: false,
-          actionExecution: "presentation_only",
-          requiresApproval: true,
+          ...security,
           failClosed: true
         };
       }
-
-      const mimeType =
-        audio.inlineData.mimeType ||
-        "audio/pcm";
-
-      const data = audio.inlineData.data;
 
       return {
         success: true,
         type: "tts_audio_ready",
         model: this.model,
+        voice,
+        transcript: input,
         audio: {
-          data,
-          mimeType
+          data: audio.data,
+          mimeType:
+            typeof audio.mime_type === "string" &&
+            audio.mime_type
+              ? audio.mime_type
+              : "audio/wav"
         },
-        executionAllowed: false,
-        externalExecution: false,
-        actionExecution: "presentation_only",
-        requiresApproval: true,
+        ...security,
         failClosed: false
       };
     } catch (error) {
@@ -129,13 +158,10 @@ class GeminiTTSAdapter {
         success: false,
         type: "tts_provider_error",
         model: this.model,
-        error: error && error.message
-          ? error.message
-          : "tts_provider_error",
-        executionAllowed: false,
-        externalExecution: false,
-        actionExecution: "presentation_only",
-        requiresApproval: true,
+        error:
+          error?.message ||
+          "tts_provider_error",
+        ...security,
         failClosed: true
       };
     }
@@ -148,10 +174,12 @@ class GeminiTTSAdapter {
       status: this.status,
       provider: "gemini",
       model: this.model,
+      voice: this.voice,
       configured: Boolean(this.client),
       requiresApproval: true,
       executionAllowed: false,
-      externalExecution: false
+      externalExecution: false,
+      actionExecution: "presentation_only"
     };
   }
 }
